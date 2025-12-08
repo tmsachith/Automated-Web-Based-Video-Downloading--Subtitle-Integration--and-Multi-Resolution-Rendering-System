@@ -292,6 +292,71 @@
             margin-left: 20px;
             margin-top: 10px;
         }
+        
+        .subtitle-input-toggle {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        
+        .toggle-btn {
+            flex: 1;
+            padding: 10px;
+            border: 2px solid #e0e0e0;
+            background: white;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-weight: 500;
+        }
+        
+        .toggle-btn:hover {
+            border-color: #667eea;
+        }
+        
+        .toggle-btn.active {
+            border-color: #667eea;
+            background: #f5f7ff;
+            color: #667eea;
+        }
+        
+        .subtitle-input-section {
+            display: none;
+        }
+        
+        .subtitle-input-section.active {
+            display: block;
+        }
+        
+        .file-upload-area {
+            border: 2px dashed #e0e0e0;
+            border-radius: 8px;
+            padding: 30px;
+            text-align: center;
+            transition: all 0.3s;
+            cursor: pointer;
+        }
+        
+        .file-upload-area:hover {
+            border-color: #667eea;
+            background: #f5f7ff;
+        }
+        
+        .file-upload-area.drag-over {
+            border-color: #667eea;
+            background: #f5f7ff;
+        }
+        
+        .upload-icon {
+            font-size: 48px;
+            margin-bottom: 10px;
+        }
+        
+        .file-name {
+            margin-top: 10px;
+            color: #667eea;
+            font-weight: 600;
+        }
     </style>
 </head>
 <body>
@@ -305,8 +370,9 @@
             <div class="info-box">
                 <strong>ℹ️ How it works:</strong>
                 <ul>
-                    <li>Provide direct download links for video and subtitle files</li>
-                    <li>System automatically downloads and processes your media</li>
+                    <li>Provide direct download link for video OR enter URL</li>
+                    <li>Upload subtitle file (.srt) OR provide download link</li>
+                    <li>System automatically processes your media</li>
                     <li>Subtitles are embedded (soft or hard burned)</li>
                     <li>Video is encoded to selected resolutions</li>
                     <li>Download the processed files when ready</li>
@@ -315,7 +381,7 @@
             
             <div id="alertBox"></div>
             
-            <form id="processingForm">
+            <form id="processingForm" enctype="multipart/form-data">
                 <div class="form-group">
                     <label for="videoUrl">Video URL</label>
                     <input 
@@ -328,14 +394,46 @@
                 </div>
                 
                 <div class="form-group">
-                    <label for="subtitleUrl">Subtitle URL</label>
-                    <input 
-                        type="url" 
-                        id="subtitleUrl" 
-                        name="subtitleUrl" 
-                        placeholder="https://example.com/subtitle.srt" 
-                        required
-                    >
+                    <label>Subtitle Input Method</label>
+                    <div class="subtitle-input-toggle">
+                        <button type="button" class="toggle-btn active" id="urlToggle">
+                            🔗 Subtitle URL
+                        </button>
+                        <button type="button" class="toggle-btn" id="uploadToggle">
+                            📁 Upload File
+                        </button>
+                    </div>
+                    
+                    <!-- URL Input -->
+                    <div class="subtitle-input-section active" id="urlSection">
+                        <input 
+                            type="url" 
+                            id="subtitleUrl" 
+                            name="subtitleUrl" 
+                            placeholder="https://example.com/subtitle.srt"
+                        >
+                    </div>
+                    
+                    <!-- File Upload -->
+                    <div class="subtitle-input-section" id="uploadSection">
+                        <div class="file-upload-area" id="fileUploadArea">
+                            <div class="upload-icon">📄</div>
+                            <div>
+                                <strong>Click to browse</strong> or drag and drop
+                            </div>
+                            <div style="color: #666; font-size: 14px; margin-top: 5px;">
+                                Supported: .srt, .ass, .vtt, .sub
+                            </div>
+                            <div class="file-name" id="fileName" style="display: none;"></div>
+                        </div>
+                        <input 
+                            type="file" 
+                            id="subtitleFile" 
+                            name="subtitleFile" 
+                            accept=".srt,.ass,.vtt,.sub,.ssa"
+                            style="display: none;"
+                        >
+                    </div>
                 </div>
                 
                 <div class="form-group">
@@ -390,11 +488,63 @@
         let currentJobId = null;
         let statusCheckInterval = null;
         
+        // Toggle between URL and file upload
+        document.getElementById('urlToggle').addEventListener('click', function() {
+            document.getElementById('urlToggle').classList.add('active');
+            document.getElementById('uploadToggle').classList.remove('active');
+            document.getElementById('urlSection').classList.add('active');
+            document.getElementById('uploadSection').classList.remove('active');
+        });
+        
+        document.getElementById('uploadToggle').addEventListener('click', function() {
+            document.getElementById('uploadToggle').classList.add('active');
+            document.getElementById('urlToggle').classList.remove('active');
+            document.getElementById('uploadSection').classList.add('active');
+            document.getElementById('urlSection').classList.remove('active');
+        });
+        
+        // File upload handling
+        const fileUploadArea = document.getElementById('fileUploadArea');
+        const fileInput = document.getElementById('subtitleFile');
+        const fileNameDisplay = document.getElementById('fileName');
+        
+        fileUploadArea.addEventListener('click', () => fileInput.click());
+        
+        fileInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                fileNameDisplay.textContent = `✓ ${file.name} (${(file.size / 1024).toFixed(2)} KB)`;
+                fileNameDisplay.style.display = 'block';
+            }
+        });
+        
+        // Drag and drop
+        fileUploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            fileUploadArea.classList.add('drag-over');
+        });
+        
+        fileUploadArea.addEventListener('dragleave', () => {
+            fileUploadArea.classList.remove('drag-over');
+        });
+        
+        fileUploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            fileUploadArea.classList.remove('drag-over');
+            const file = e.dataTransfer.files[0];
+            if (file && file.name.match(/\.(srt|ass|vtt|sub|ssa)$/i)) {
+                fileInput.files = e.dataTransfer.files;
+                fileNameDisplay.textContent = `✓ ${file.name} (${(file.size / 1024).toFixed(2)} KB)`;
+                fileNameDisplay.style.display = 'block';
+            } else {
+                showAlert('Please upload a valid subtitle file (.srt, .ass, .vtt, .sub)', 'error');
+            }
+        });
+        
         document.getElementById('processingForm').addEventListener('submit', async (e) => {
             e.preventDefault();
             
             const videoUrl = document.getElementById('videoUrl').value;
-            const subtitleUrl = document.getElementById('subtitleUrl').value;
             const subtitleMode = document.querySelector('input[name="subtitleMode"]:checked').value;
             const resolutionCheckboxes = document.querySelectorAll('input[name="resolutions"]:checked');
             const resolutions = Array.from(resolutionCheckboxes).map(cb => cb.value);
@@ -409,28 +559,75 @@
             submitBtn.innerHTML = 'Submitting... <span class="spinner"></span>';
             
             try {
-                const response = await fetch('/api/submit', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        video_url: videoUrl,
-                        subtitle_url: subtitleUrl,
-                        resolutions: resolutions,
-                        soft_subtitle: subtitleMode === 'soft'
-                    })
-                });
+                // Check which subtitle method is active
+                const isUrlMethod = document.getElementById('urlSection').classList.contains('active');
                 
-                const data = await response.json();
-                
-                if (data.success) {
-                    currentJobId = data.job_id;
-                    showAlert(`Job submitted successfully! Job ID: ${data.job_id}`, 'success');
-                    document.getElementById('statusSection').style.display = 'block';
-                    startStatusCheck();
+                if (isUrlMethod) {
+                    // URL method - send JSON
+                    const subtitleUrl = document.getElementById('subtitleUrl').value;
+                    
+                    if (!subtitleUrl) {
+                        showAlert('Please enter subtitle URL', 'error');
+                        submitBtn.disabled = false;
+                        submitBtn.innerHTML = 'Start Processing';
+                        return;
+                    }
+                    
+                    const response = await fetch('/api/submit', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            video_url: videoUrl,
+                            subtitle_url: subtitleUrl,
+                            resolutions: resolutions,
+                            soft_subtitle: subtitleMode === 'soft'
+                        })
+                    });
+                    
+                    const data = await response.json();
+                    
+                    if (data.success) {
+                        currentJobId = data.job_id;
+                        showAlert(`Job submitted successfully! Job ID: ${data.job_id}`, 'success');
+                        document.getElementById('statusSection').style.display = 'block';
+                        startStatusCheck();
+                    } else {
+                        showAlert(`Error: ${data.error}`, 'error');
+                    }
                 } else {
-                    showAlert(`Error: ${data.error}`, 'error');
+                    // File upload method - send FormData
+                    const subtitleFile = document.getElementById('subtitleFile').files[0];
+                    
+                    if (!subtitleFile) {
+                        showAlert('Please upload a subtitle file', 'error');
+                        submitBtn.disabled = false;
+                        submitBtn.innerHTML = 'Start Processing';
+                        return;
+                    }
+                    
+                    const formData = new FormData();
+                    formData.append('video_url', videoUrl);
+                    formData.append('subtitle_file', subtitleFile);
+                    formData.append('resolutions', JSON.stringify(resolutions));
+                    formData.append('soft_subtitle', subtitleMode === 'soft');
+                    
+                    const response = await fetch('/api/submit_with_file', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    const data = await response.json();
+                    
+                    if (data.success) {
+                        currentJobId = data.job_id;
+                        showAlert(`Job submitted successfully! Job ID: ${data.job_id}`, 'success');
+                        document.getElementById('statusSection').style.display = 'block';
+                        startStatusCheck();
+                    } else {
+                        showAlert(`Error: ${data.error}`, 'error');
+                    }
                 }
             } catch (error) {
                 showAlert(`Failed to submit job: ${error.message}`, 'error');
