@@ -97,7 +97,7 @@ LOG_CONFIG = {
 # Processing settings
 PROCESSING_CONFIG = {
     'cleanup_temp_files': True,
-    'keep_original_files': True,
+    'keep_original_files': False,  # Don't keep originals to save space (especially for cloud)
     'batch_processing': False,
     'parallel_encoding': False  # Encode multiple resolutions simultaneously
 }
@@ -107,7 +107,7 @@ WEB_CONFIG = {
     'host': os.getenv('HOST', '0.0.0.0'),
     'port': int(os.getenv('PORT', 5000)),
     'debug': os.getenv('FLASK_ENV', 'production') != 'production',
-    'max_upload_size': 100 * 1024 * 1024,  # 100MB (for direct uploads if needed)
+    'max_upload_size': 5 * 1024 * 1024 * 1024,  # 5GB (for large video files)
     'allowed_hosts': ['localhost', '127.0.0.1']
 }
 
