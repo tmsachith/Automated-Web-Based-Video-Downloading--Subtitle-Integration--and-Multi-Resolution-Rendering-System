@@ -87,6 +87,89 @@ class Downloader:
             return False
         return True
     
+    def download_file_with_progress(
+        self,
+        url: str,
+        destination: Path,
+        file_type: str = 'video',
+        filename: Optional[str] = None,
+        progress_callback=None
+    ) -> Path:
+        """
+        Download file from URL with progress callback
+        
+        Args:
+            url: Download URL
+            destination: Destination directory
+            file_type: Type of file ('video' or 'subtitle')
+            filename: Optional custom filename
+            progress_callback: Function(current_bytes, total_bytes) for progress updates
+            
+        Returns:
+            Path to downloaded file
+        """
+        if not self.validate_url(url):
+            raise ValidationError(f"Invalid URL: {url}")
+        
+        logger.info(f"Starting download from: {url}")
+        
+        attempt = 0
+        last_error = None
+        
+        while attempt < self.max_retries:
+            try:
+                # Send HEAD request to get file info
+                head_response = requests.head(
+                    url, 
+                    headers=self.headers, 
+                    timeout=self.timeout,
+                    allow_redirects=True,
+                    verify=DOWNLOAD_CONFIG['verify_ssl']
+                )
+                
+                content_type = head_response.headers.get('Content-Type', '')
+                content_length = int(head_response.headers.get('Content-Length', 0))
+                
+                # Determine filename
+                if not filename:
+                    filename = self.get_filename_from_url(url, content_type)
+                
+                file_path = destination / filename
+                
+                logger.info(f"Downloading to: {file_path}")
+                logger.info(f"File size: {content_length / (1024*1024):.2f} MB")
+                
+                # Download with progress callback
+                response = requests.get(
+                    url,
+                    headers=self.headers,
+                    timeout=self.timeout,
+                    stream=True,
+                    verify=DOWNLOAD_CONFIG['verify_ssl']
+                )
+                response.raise_for_status()
+                
+                downloaded = 0
+                with open(file_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=self.chunk_size):
+                        if chunk:
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            if progress_callback:
+                                progress_callback(downloaded, content_length)
+                
+                logger.info(f"Download completed: {file_path}")
+                return file_path
+                
+            except Exception as e:
+                attempt += 1
+                last_error = e
+                logger.warning(f"Download attempt {attempt} failed: {e}")
+                if attempt < self.max_retries:
+                    logger.info(f"Retrying... ({attempt}/{self.max_retries})")
+        
+        raise DownloadError(f"Download failed after {self.max_retries} attempts: {last_error}")
+    
     def download_file(
         self, 
         url: str, 

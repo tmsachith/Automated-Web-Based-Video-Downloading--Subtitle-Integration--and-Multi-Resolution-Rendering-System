@@ -20,9 +20,13 @@ app.config['UPLOAD_FOLDER'] = DIRS['downloads']
 # Store active jobs
 active_jobs = {}
 completed_jobs = {}
+cancelled_jobs = set()  # Track cancelled job IDs
 
 # Allowed subtitle extensions
 ALLOWED_EXTENSIONS = {'.srt', '.ass', '.vtt', '.sub', '.ssa'}
+
+# Progress tracking
+job_progress = {}  # {job_id: {'current': 0, 'total': 100, 'task': 'description'}}
 
 
 class JobProcessor(threading.Thread):
@@ -37,12 +41,45 @@ class JobProcessor(threading.Thread):
         self.use_soft_subtitle = use_soft_subtitle
         self.use_file = use_file  # True if subtitle_source is a file path
         self.pipeline = VideoProcessingPipeline()
+        self.cancelled = False
+    
+    def update_progress(self, task, current, total, task_status='in-progress'):
+        """Update job progress"""
+        if self.job_id in active_jobs:
+            active_jobs[self.job_id]['progress'] = {
+                'task': task,
+                'current': current,
+                'total': total,
+                'percentage': int((current / total * 100) if total > 0 else 0),
+                'task_status': task_status
+            }
+    
+    def update_task_list(self, tasks):
+        """Update task list for the job"""
+        if self.job_id in active_jobs:
+            active_jobs[self.job_id]['tasks'] = tasks
+    
+    def check_cancelled(self):
+        """Check if job was cancelled"""
+        return self.job_id in cancelled_jobs
     
     def run(self):
         """Execute the processing job"""
         try:
+            # Initialize tasks
+            tasks = [
+                {'name': 'Download Video', 'status': 'pending'},
+                {'name': 'Download/Upload Subtitle', 'status': 'pending'},
+                {'name': 'Process Subtitles', 'status': 'pending'},
+                {'name': 'Encode Videos', 'status': 'pending'}
+            ]
+            
             active_jobs[self.job_id]['status'] = 'processing'
-            active_jobs[self.job_id]['stage'] = 'Downloading files' if not self.use_file else 'Processing files'
+            active_jobs[self.job_id]['stage'] = 'Initializing'
+            self.update_task_list(tasks)
+            
+            if self.check_cancelled():
+                raise Exception("Job cancelled by user")
             
             if self.use_file:
                 # Process with uploaded file
@@ -52,12 +89,24 @@ class JobProcessor(threading.Thread):
                 downloader = Downloader()
                 
                 # Download video
+                tasks[0]['status'] = 'in-progress'
+                self.update_task_list(tasks)
                 active_jobs[self.job_id]['stage'] = 'Downloading video'
-                video_path = downloader.download_file(
+                self.update_progress('Downloading video', 0, 100)
+                
+                video_path = downloader.download_file_with_progress(
                     self.video_url,
                     DIRS['downloads'],
-                    file_type='video'
+                    file_type='video',
+                    progress_callback=lambda cur, tot: self.update_progress('Downloading video', cur, tot)
                 )
+                
+                if self.check_cancelled():
+                    raise Exception("Job cancelled by user")
+                
+                tasks[0]['status'] = 'completed'
+                tasks[1]['status'] = 'completed'  # Subtitle already uploaded
+                self.update_task_list(tasks)
                 
                 # Subtitle is already uploaded
                 subtitle_path = Path(self.subtitle_source)
@@ -66,22 +115,48 @@ class JobProcessor(threading.Thread):
                 from subtitle_processor import SubtitleProcessor
                 processor = SubtitleProcessor()
                 
+                if self.check_cancelled():
+                    raise Exception("Job cancelled by user")
+                
+                tasks[2]['status'] = 'in-progress'
+                self.update_task_list(tasks)
                 active_jobs[self.job_id]['stage'] = 'Processing subtitles'
+                self.update_progress('Processing subtitles', 0, 100)
+                
                 processed_video = processor.process_subtitle(
                     video_path,
                     subtitle_path,
                     self.use_soft_subtitle
                 )
                 
+                tasks[2]['status'] = 'completed'
+                self.update_task_list(tasks)
+                
                 # Encode to multiple resolutions
                 from video_encoder import VideoEncoder
                 encoder = VideoEncoder()
                 
+                if self.check_cancelled():
+                    raise Exception("Job cancelled by user")
+                
+                tasks[3]['status'] = 'in-progress'
+                self.update_task_list(tasks)
                 active_jobs[self.job_id]['stage'] = 'Encoding videos'
-                output_files = encoder.encode_all_resolutions(
-                    processed_video,
-                    self.resolutions
-                )
+                
+                output_files = {}
+                total_resolutions = len(self.resolutions)
+                for idx, resolution in enumerate(self.resolutions):
+                    if self.check_cancelled():
+                        raise Exception("Job cancelled by user")
+                    
+                    self.update_progress(f'Encoding {resolution}', idx, total_resolutions)
+                    output_files[resolution] = encoder.encode_single_resolution(
+                        processed_video,
+                        resolution
+                    )
+                
+                tasks[3]['status'] = 'completed'
+                self.update_task_list(tasks)
                 
                 results = {
                     'job_id': self.job_id,
@@ -100,11 +175,19 @@ class JobProcessor(threading.Thread):
                     self.use_soft_subtitle
                 )
             
-            # Move to completed jobs
+            # Mark all tasks completed
+            for task in tasks:
+                task['status'] = 'completed'
+            self.update_task_list(tasks)
+            self.update_progress('Completed', 100, 100, 'completed')
+            
+            # Move to completed jobs with output file info
             completed_jobs[self.job_id] = {
                 'status': 'completed',
                 'results': results,
-                'timestamp': datetime.now().isoformat()
+                'timestamp': datetime.now().isoformat(),
+                'tasks': tasks,
+                'output_files': results.get('output_files', {})
             }
             
             if self.job_id in active_jobs:
@@ -112,14 +195,21 @@ class JobProcessor(threading.Thread):
                 
         except Exception as e:
             logger.error(f"Job {self.job_id} failed: {e}")
+            
+            is_cancelled = 'cancelled' in str(e).lower()
+            
             completed_jobs[self.job_id] = {
-                'status': 'failed',
+                'status': 'cancelled' if is_cancelled else 'failed',
                 'error': str(e),
-                'timestamp': datetime.now().isoformat()
+                'timestamp': datetime.now().isoformat(),
+                'tasks': tasks if 'tasks' in locals() else []
             }
             
             if self.job_id in active_jobs:
                 del active_jobs[self.job_id]
+            
+            if self.job_id in cancelled_jobs:
+                cancelled_jobs.remove(self.job_id)
 
 
 @app.route('/')
@@ -275,6 +365,92 @@ def job_status(job_id):
         'status': 'not_found',
         'error': 'Job not found'
     }), 404
+
+
+@app.route('/api/jobs/all')
+def get_all_jobs():
+    """Get all jobs (active and completed)"""
+    all_jobs = []
+    
+    # Add active jobs
+    for job_id, job_data in active_jobs.items():
+        all_jobs.append({
+            'job_id': job_id,
+            'status': 'active',
+            'details': job_data
+        })
+    
+    # Add completed jobs
+    for job_id, job_data in completed_jobs.items():
+        all_jobs.append({
+            'job_id': job_id,
+            'status': job_data.get('status', 'completed'),
+            'details': job_data
+        })
+    
+    # Sort by timestamp (newest first)
+    all_jobs.sort(key=lambda x: x['details'].get('timestamp', ''), reverse=True)
+    
+    return jsonify({
+        'success': True,
+        'jobs': all_jobs,
+        'total': len(all_jobs),
+        'active_count': len(active_jobs),
+        'completed_count': len(completed_jobs)
+    })
+
+
+@app.route('/api/jobs/cancel/<job_id>', methods=['POST'])
+def cancel_job(job_id):
+    """Cancel an active job"""
+    if job_id in active_jobs:
+        cancelled_jobs.add(job_id)
+        active_jobs[job_id]['status'] = 'cancelling'
+        active_jobs[job_id]['stage'] = 'Cancelling...'
+        
+        return jsonify({
+            'success': True,
+            'message': f'Job {job_id} is being cancelled'
+        })
+    else:
+        return jsonify({
+            'success': False,
+            'error': 'Job not found or already completed'
+        }), 404
+
+
+@app.route('/api/download/<job_id>/<resolution>')
+def download_video(job_id, resolution):
+    """Download a processed video file"""
+    if job_id in completed_jobs:
+        job_data = completed_jobs[job_id]
+        if 'output_files' in job_data:
+            file_path = job_data['output_files'].get(resolution)
+            if file_path and os.path.exists(file_path):
+                return send_file(
+                    file_path,
+                    as_attachment=True,
+                    download_name=os.path.basename(file_path)
+                )
+    
+    return jsonify({'error': 'File not found'}), 404
+
+
+@app.route('/api/stream/<job_id>/<resolution>')
+def stream_video(job_id, resolution):
+    """Stream a processed video file"""
+    if job_id in completed_jobs:
+        job_data = completed_jobs[job_id]
+        if 'output_files' in job_data:
+            file_path = job_data['output_files'].get(resolution)
+            if file_path and os.path.exists(file_path):
+                return send_file(
+                    file_path,
+                    mimetype='video/mp4',
+                    as_attachment=False
+                )
+    
+    return jsonify({'error': 'File not found'}), 404
 
 
 @app.route('/api/jobs')
