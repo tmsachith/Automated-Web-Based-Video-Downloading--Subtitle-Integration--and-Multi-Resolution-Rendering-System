@@ -711,6 +711,26 @@
             if (details.progress && isActive) {
                 const prog = details.progress;
                 const percentage = prog.percentage || 0;
+                
+                // Format speed
+                let speedText = '';
+                if (prog.speed && prog.speed > 0) {
+                    const speedMB = (prog.speed / (1024 * 1024)).toFixed(2);
+                    speedText = `${speedMB} MB/s`;
+                }
+                
+                // Format ETA
+                let etaText = '';
+                if (prog.eta && prog.eta > 0) {
+                    const minutes = Math.floor(prog.eta / 60);
+                    const seconds = Math.floor(prog.eta % 60);
+                    if (minutes > 0) {
+                        etaText = `${minutes}m ${seconds}s remaining`;
+                    } else {
+                        etaText = `${seconds}s remaining`;
+                    }
+                }
+                
                 progressHTML = `
                     <div style="margin: 15px 0;">
                         <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
@@ -720,6 +740,12 @@
                         <div style="background: #e0e0e0; border-radius: 10px; height: 20px; overflow: hidden;">
                             <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); height: 100%; width: ${percentage}%; transition: width 0.3s;"></div>
                         </div>
+                        ${speedText || etaText ? `
+                            <div style="display: flex; justify-content: space-between; margin-top: 5px; font-size: 12px; color: #666;">
+                                <span>${speedText ? '⚡ ' + speedText : ''}</span>
+                                <span>${etaText ? '⏱️ ' + etaText : ''}</span>
+                            </div>
+                        ` : ''}
                     </div>
                 `;
             }

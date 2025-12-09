@@ -100,7 +100,7 @@ class JobProcessor(threading.Thread):
         self.pipeline = VideoProcessingPipeline()
         self.cancelled = False
     
-    def update_progress(self, task, current, total, task_status='in-progress'):
+    def update_progress(self, task, current, total, task_status='in-progress', speed=0, eta=0):
         """Update job progress"""
         if self.job_id in active_jobs:
             active_jobs[self.job_id]['progress'] = {
@@ -108,7 +108,9 @@ class JobProcessor(threading.Thread):
                 'current': current,
                 'total': total,
                 'percentage': int((current / total * 100) if total > 0 else 0),
-                'task_status': task_status
+                'task_status': task_status,
+                'speed': speed,  # bytes per second
+                'eta': eta  # seconds remaining
             }
     
     def update_task_list(self, tasks):
@@ -155,7 +157,7 @@ class JobProcessor(threading.Thread):
                     self.video_url,
                     DIRS['downloads'],
                     file_type='video',
-                    progress_callback=lambda cur, tot: self.update_progress('Downloading video', cur, tot)
+                    progress_callback=lambda cur, tot, spd=0, eta=0: self.update_progress('Downloading video', cur, tot, 'in-progress', spd, eta)
                 )
                 
                 if self.check_cancelled():
@@ -178,7 +180,13 @@ class JobProcessor(threading.Thread):
                 tasks[2]['status'] = 'in-progress'
                 self.update_task_list(tasks)
                 active_jobs[self.job_id]['stage'] = 'Processing subtitles'
-                self.update_progress('Processing subtitles', 0, 100)
+                
+                # Show initial progress immediately
+                self.update_progress('Processing subtitles (this may take several minutes)', 10, 100, 'in-progress')
+                import time
+                time.sleep(0.5)  # Small delay to ensure UI updates
+                
+                self.update_progress('Burning subtitles into video frames', 30, 100, 'in-progress')
                 
                 processed_video = processor.process_subtitle(
                     video_path,
@@ -186,6 +194,7 @@ class JobProcessor(threading.Thread):
                     self.use_soft_subtitle
                 )
                 
+                self.update_progress('Processing subtitles', 100, 100, 'completed')
                 tasks[2]['status'] = 'completed'
                 self.update_task_list(tasks)
                 
@@ -206,11 +215,18 @@ class JobProcessor(threading.Thread):
                     if self.check_cancelled():
                         raise Exception("Job cancelled by user")
                     
-                    self.update_progress(f'Encoding {resolution}', idx, total_resolutions)
+                    # Show progress for current encoding
+                    current_percentage = int((idx / total_resolutions) * 100)
+                    self.update_progress(f'Encoding {resolution}', current_percentage, 100, 'in-progress')
+                    
                     output_files[resolution] = encoder.encode_single_resolution(
                         processed_video,
                         resolution
                     )
+                    
+                    # Update after completion of this resolution
+                    completed_percentage = int(((idx + 1) / total_resolutions) * 100)
+                    self.update_progress(f'Encoding videos', completed_percentage, 100, 'in-progress')
                 
                 tasks[3]['status'] = 'completed'
                 self.update_task_list(tasks)

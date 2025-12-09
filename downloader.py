@@ -8,6 +8,7 @@ from typing import Tuple, Optional
 from urllib.parse import urlparse, unquote
 import mimetypes
 from tqdm import tqdm
+import time
 
 from config import DOWNLOAD_CONFIG, DIRS, SUPPORTED_FORMATS
 from logger import logger, DownloadError, ValidationError
@@ -150,13 +151,31 @@ class Downloader:
                 response.raise_for_status()
                 
                 downloaded = 0
+                start_time = time.time()
+                last_update = start_time
+                last_downloaded = 0
+                
                 with open(file_path, 'wb') as f:
                     for chunk in response.iter_content(chunk_size=self.chunk_size):
                         if chunk:
                             f.write(chunk)
                             downloaded += len(chunk)
-                            if progress_callback:
-                                progress_callback(downloaded, content_length)
+                            
+                            # Calculate speed and ETA every second
+                            current_time = time.time()
+                            if progress_callback and (current_time - last_update >= 1.0 or downloaded == content_length):
+                                elapsed = current_time - start_time
+                                speed = downloaded / elapsed if elapsed > 0 else 0  # bytes per second
+                                
+                                if speed > 0 and downloaded < content_length:
+                                    remaining_bytes = content_length - downloaded
+                                    eta_seconds = remaining_bytes / speed
+                                else:
+                                    eta_seconds = 0
+                                
+                                progress_callback(downloaded, content_length, speed, eta_seconds)
+                                last_update = current_time
+                                last_downloaded = downloaded
                 
                 logger.info(f"Download completed: {file_path}")
                 return file_path
