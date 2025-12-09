@@ -28,6 +28,63 @@ ALLOWED_EXTENSIONS = {'.srt', '.ass', '.vtt', '.sub', '.ssa'}
 # Progress tracking
 job_progress = {}  # {job_id: {'current': 0, 'total': 100, 'task': 'description'}}
 
+# Job persistence file
+JOBS_FILE = DIRS['logs'] / 'jobs_state.json'
+
+
+def save_jobs_to_disk():
+    """Save current job state to disk"""
+    try:
+        state = {
+            'active_jobs': active_jobs,
+            'completed_jobs': completed_jobs,
+            'cancelled_jobs': list(cancelled_jobs),
+            'timestamp': datetime.now().isoformat()
+        }
+        with open(JOBS_FILE, 'w') as f:
+            json.dump(state, f, indent=2)
+        logger.info(f"Jobs saved to disk: {len(active_jobs)} active, {len(completed_jobs)} completed")
+    except Exception as e:
+        logger.error(f"Failed to save jobs to disk: {e}")
+
+
+def load_jobs_from_disk():
+    """Load job state from disk on startup"""
+    global active_jobs, completed_jobs, cancelled_jobs
+    
+    try:
+        if JOBS_FILE.exists():
+            with open(JOBS_FILE, 'r') as f:
+                state = json.load(f)
+            
+            # Restore completed jobs
+            completed_jobs = state.get('completed_jobs', {})
+            
+            # Mark active jobs as interrupted (they won't resume)
+            old_active = state.get('active_jobs', {})
+            for job_id, job_data in old_active.items():
+                completed_jobs[job_id] = {
+                    'status': 'interrupted',
+                    'error': 'Server was redeployed while job was processing',
+                    'timestamp': datetime.now().isoformat(),
+                    'tasks': job_data.get('tasks', []),
+                    'original_data': job_data
+                }
+            
+            cancelled_jobs = set(state.get('cancelled_jobs', []))
+            
+            logger.info(f"Jobs loaded from disk: {len(completed_jobs)} total jobs, {len(old_active)} were interrupted")
+            
+            # Save updated state
+            save_jobs_to_disk()
+            
+            return True
+    except Exception as e:
+        logger.error(f"Failed to load jobs from disk: {e}")
+        return False
+    
+    return False
+
 
 class JobProcessor(threading.Thread):
     """Background thread for processing video jobs"""
@@ -192,6 +249,9 @@ class JobProcessor(threading.Thread):
             
             if self.job_id in active_jobs:
                 del active_jobs[self.job_id]
+            
+            # Save state to disk
+            save_jobs_to_disk()
                 
         except Exception as e:
             logger.error(f"Job {self.job_id} failed: {e}")
@@ -210,6 +270,9 @@ class JobProcessor(threading.Thread):
             
             if self.job_id in cancelled_jobs:
                 cancelled_jobs.remove(self.job_id)
+            
+            # Save state to disk
+            save_jobs_to_disk()
 
 
 @app.route('/')
@@ -255,6 +318,9 @@ def submit_job():
         # Start processing thread
         processor = JobProcessor(job_id, video_url, subtitle_url, resolutions, use_soft_subtitle)
         processor.start()
+        
+        # Save state to disk
+        save_jobs_to_disk()
         
         return jsonify({
             'success': True,
@@ -326,6 +392,9 @@ def submit_job_with_file():
         # Start processing thread with file path instead of URL
         processor = JobProcessor(job_id, video_url, str(subtitle_path), resolutions, use_soft_subtitle, use_file=True)
         processor.start()
+        
+        # Save state to disk
+        save_jobs_to_disk()
         
         return jsonify({
             'success': True,
@@ -506,6 +575,17 @@ def run_web_app():
     print("\n" + "="*80)
     print("AUTOMATED VIDEO PROCESSING SYSTEM - WEB INTERFACE")
     print("="*80)
+    
+    # Load previous job state
+    print("\nLoading previous job state...")
+    if load_jobs_from_disk():
+        print(f"✓ Loaded {len(completed_jobs)} jobs from previous session")
+        interrupted_count = sum(1 for job in completed_jobs.values() if job.get('status') == 'interrupted')
+        if interrupted_count > 0:
+            print(f"⚠ {interrupted_count} jobs were interrupted by server restart")
+    else:
+        print("No previous jobs found")
+    
     print(f"\nStarting web server on http://{WEB_CONFIG['host']}:{WEB_CONFIG['port']}")
     print("\nPress Ctrl+C to stop the server\n")
     print("="*80 + "\n")

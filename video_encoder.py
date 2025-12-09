@@ -121,14 +121,26 @@ class VideoEncoder:
         logger.info(f"Encoding {resolution_name}: {output_width}x{target_height}")
         logger.info(f"Output: {output_path}")
         
+        # Check for low-memory mode
+        from config import PROCESSING_CONFIG
+        low_memory = PROCESSING_CONFIG.get('low_memory_mode', False)
+        
         try:
-            # Build FFmpeg command
+            # Build FFmpeg command with memory optimizations
+            if low_memory:
+                logger.info("Using low-memory optimization for encoding")
+                thread_count = 2
+                preset = 'veryfast'
+            else:
+                thread_count = FFMPEG_CONFIG['max_threads']
+                preset = config.get('preset', self.preset)
+            
             cmd = [
                 'ffmpeg',
                 '-i', str(input_video),
                 '-vf', f'scale={output_width}:{target_height}',
                 '-c:v', self.video_codec,
-                '-preset', config.get('preset', self.preset),
+                '-preset', preset,
                 '-crf', str(self.crf),
                 '-b:v', config['bitrate_video'],
                 '-maxrate', config['bitrate_video'],
@@ -138,7 +150,8 @@ class VideoEncoder:
                 '-ac', '2',  # Stereo audio
                 '-pix_fmt', self.pixel_format,
                 '-movflags', '+faststart',  # Enable streaming
-                '-threads', str(FFMPEG_CONFIG['max_threads']),
+                '-threads', str(thread_count),
+                '-max_muxing_queue_size', '1024',  # Prevent memory overflow
                 '-y',  # Overwrite output
                 str(output_path)
             ]

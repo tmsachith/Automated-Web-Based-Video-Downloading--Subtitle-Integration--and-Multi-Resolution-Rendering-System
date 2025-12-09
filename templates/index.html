@@ -477,16 +477,22 @@
                 </button>
             </form>
             
-            <div class="status-section" id="statusSection" style="display: none;">
-                <h2>Processing Status</h2>
+            <div class="status-section" id="statusSection" style="display: block;">
+                <h2>Jobs Status</h2>
                 <div id="jobsList"></div>
             </div>
         </div>
     </div>
     
     <script>
-        let currentJobId = null;
         let statusCheckInterval = null;
+        let allJobs = [];
+        
+        // Load all jobs on page load
+        window.addEventListener('load', () => {
+            loadAllJobs();
+            startStatusCheck();
+        });
         
         // Toggle between URL and file upload
         document.getElementById('urlToggle').addEventListener('click', function() {
@@ -589,10 +595,9 @@
                     const data = await response.json();
                     
                     if (data.success) {
-                        currentJobId = data.job_id;
                         showAlert(`Job submitted successfully! Job ID: ${data.job_id}`, 'success');
                         document.getElementById('statusSection').style.display = 'block';
-                        startStatusCheck();
+                        loadAllJobs();
                     } else {
                         showAlert(`Error: ${data.error}`, 'error');
                     }
@@ -621,10 +626,9 @@
                     const data = await response.json();
                     
                     if (data.success) {
-                        currentJobId = data.job_id;
                         showAlert(`Job submitted successfully! Job ID: ${data.job_id}`, 'success');
                         document.getElementById('statusSection').style.display = 'block';
-                        startStatusCheck();
+                        loadAllJobs();
                     } else {
                         showAlert(`Error: ${data.error}`, 'error');
                     }
@@ -647,79 +651,183 @@
             }, 5000);
         }
         
+        async function loadAllJobs() {
+            try {
+                const response = await fetch('/api/jobs/all');
+                const data = await response.json();
+                
+                if (data.success) {
+                    allJobs = data.jobs;
+                    updateJobsDisplay();
+                }
+            } catch (error) {
+                console.error('Failed to load jobs:', error);
+            }
+        }
+        
         function startStatusCheck() {
             if (statusCheckInterval) {
                 clearInterval(statusCheckInterval);
             }
             
-            checkJobStatus();
-            statusCheckInterval = setInterval(checkJobStatus, 3000);
+            loadAllJobs();
+            statusCheckInterval = setInterval(loadAllJobs, 3000);
         }
         
-        async function checkJobStatus() {
-            if (!currentJobId) return;
-            
-            try {
-                const response = await fetch(`/api/status/${currentJobId}`);
-                const data = await response.json();
-                
-                updateJobDisplay(data);
-                
-                if (data.details && data.details.status === 'completed') {
-                    clearInterval(statusCheckInterval);
-                }
-            } catch (error) {
-                console.error('Failed to check status:', error);
-            }
-        }
-        
-        function updateJobDisplay(jobData) {
+        function updateJobsDisplay() {
             const jobsList = document.getElementById('jobsList');
-            const details = jobData.details;
+            
+            if (allJobs.length === 0) {
+                jobsList.innerHTML = '<p style="color: #666; text-align: center; padding: 20px;">No jobs yet. Submit your first video processing job above!</p>';
+                return;
+            }
+            
+            jobsList.innerHTML = allJobs.map(job => createJobCard(job)).join('');
+        }
+        
+        function createJobCard(job) {
+            const details = job.details;
+            const isActive = job.status === 'active';
+            const isCompleted = details.status === 'completed';
+            const isFailed = details.status === 'failed';
+            const isCancelled = details.status === 'cancelled';
             
             let statusClass = 'status-queued';
-            let statusText = 'Queued';
+            let statusText = details.status || 'queued';
             
-            if (details.status === 'processing') {
+            if (isActive) {
                 statusClass = 'status-processing';
-                statusText = 'Processing';
-            } else if (details.status === 'completed') {
+                statusText = 'processing';
+            } else if (isCompleted) {
                 statusClass = 'status-completed';
-                statusText = 'Completed';
-            } else if (details.status === 'failed') {
+                statusText = 'completed';
+            } else if (isFailed || isCancelled) {
                 statusClass = 'status-failed';
-                statusText = 'Failed';
+                statusText = isCancelled ? 'cancelled' : 'failed';
             }
             
-            let downloadLinks = '';
-            if (details.results && details.results.output_files) {
-                downloadLinks = '<div class="download-links">';
-                for (const [resolution, path] of Object.entries(details.results.output_files)) {
-                    downloadLinks += `<a href="/api/download/${jobData.job_id}/${resolution}" class="download-btn">Download ${resolution}</a>`;
-                }
-                downloadLinks += '</div>';
+            // Progress bar
+            let progressHTML = '';
+            if (details.progress && isActive) {
+                const prog = details.progress;
+                const percentage = prog.percentage || 0;
+                progressHTML = `
+                    <div style="margin: 15px 0;">
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
+                            <span style="font-size: 13px; color: #667eea;"><strong>${prog.task}</strong></span>
+                            <span style="font-size: 13px; color: #666;">${percentage}%</span>
+                        </div>
+                        <div style="background: #e0e0e0; border-radius: 10px; height: 20px; overflow: hidden;">
+                            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); height: 100%; width: ${percentage}%; transition: width 0.3s;"></div>
+                        </div>
+                    </div>
+                `;
             }
             
-            let errorMessage = '';
-            if (details.error) {
-                errorMessage = `<div style="color: #d63031; margin-top: 10px;">Error: ${details.error}</div>`;
+            // Task checklist
+            let taskListHTML = '';
+            if (details.tasks && details.tasks.length > 0) {
+                taskListHTML = `
+                    <div style="margin: 15px 0; padding: 10px; background: white; border-radius: 8px;">
+                        <strong style="font-size: 14px; color: #333;">📋 Tasks:</strong>
+                        <ul style="margin: 10px 0 0 20px; list-style: none; padding: 0;">
+                            ${details.tasks.map(task => {
+                                let icon = '⏳';
+                                let color = '#999';
+                                if (task.status === 'completed') {
+                                    icon = '✅';
+                                    color = '#00b894';
+                                } else if (task.status === 'in-progress') {
+                                    icon = '▶️';
+                                    color = '#0984e3';
+                                } else if (task.status === 'failed') {
+                                    icon = '❌';
+                                    color = '#d63031';
+                                }
+                                return `<li style="padding: 5px 0; color: ${color};"><span>${icon}</span> ${task.name}</li>`;
+                            }).join('')}
+                        </ul>
+                    </div>
+                `;
             }
             
-            jobsList.innerHTML = `
-                <div class="job-card">
+            // Output files with stream and download
+            let outputHTML = '';
+            if (isCompleted && details.output_files) {
+                const files = details.output_files;
+                outputHTML = `
+                    <div style="margin-top: 15px; padding: 15px; background: white; border-radius: 8px;">
+                        <strong style="color: #333;">📹 Available Videos:</strong>
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-top: 10px;">
+                            ${Object.keys(files).map(res => `
+                                <div style="border: 2px solid #667eea; border-radius: 8px; padding: 10px; text-align: center;">
+                                    <div style="font-weight: 600; color: #667eea; margin-bottom: 8px;">${res}</div>
+                                    <a href="/api/stream/${job.job_id}/${res}" target="_blank" 
+                                       style="display: block; padding: 6px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; margin-bottom: 5px; font-size: 13px;">
+                                        ▶️ Stream
+                                    </a>
+                                    <a href="/api/download/${job.job_id}/${res}" 
+                                       style="display: block; padding: 6px; background: #764ba2; color: white; text-decoration: none; border-radius: 5px; font-size: 13px;">
+                                        ⬇️ Download
+                                    </a>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                `;
+            }
+            
+            // Cancel button
+            let cancelButton = '';
+            if (isActive) {
+                cancelButton = `
+                    <button onclick="cancelJob('${job.job_id}')" 
+                            style="padding: 8px 15px; background: #d63031; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 13px; margin-top: 10px;">
+                        ❌ Cancel Job
+                    </button>
+                `;
+            }
+            
+            return `
+                <div class="job-card" style="position: relative;">
                     <div class="job-header">
-                        <span class="job-id">Job ID: ${jobData.job_id}</span>
-                        <span class="status-badge ${statusClass}">${statusText}</span>
+                        <span class="job-id">Job: ${job.job_id}</span>
+                        <span class="status-badge ${statusClass}">${statusText.toUpperCase()}</span>
                     </div>
                     <div class="job-details">
-                        <div>Stage: ${details.stage || 'N/A'}</div>
-                        <div>Video: ${details.video_url || 'N/A'}</div>
-                        ${details.results ? `<div>Processing Time: ${details.results.processing_time_formatted}</div>` : ''}
+                        <div><strong>Video:</strong> ${details.video_url ? (details.video_url.length > 80 ? details.video_url.substring(0, 80) + '...' : details.video_url) : 'N/A'}</div>
+                        ${details.stage ? `<div><strong>Stage:</strong> ${details.stage}</div>` : ''}
+                        ${details.timestamp ? `<div><strong>Time:</strong> ${new Date(details.timestamp).toLocaleString()}</div>` : ''}
+                        ${details.error ? `<div style="color: #d63031; margin-top: 10px; background: #ffe0e0; padding: 10px; border-radius: 5px;"><strong>Error:</strong> ${details.error}</div>` : ''}
                     </div>
-                    ${downloadLinks}
-                    ${errorMessage}
+                    ${progressHTML}
+                    ${taskListHTML}
+                    ${outputHTML}
+                    ${cancelButton}
                 </div>
             `;
+        }
+        
+        async function cancelJob(jobId) {
+            if (!confirm('Are you sure you want to cancel this job?')) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/jobs/cancel/${jobId}`, {
+                    method: 'POST'
+                });
+                const data = await response.json();
+                
+                if (data.success) {
+                    showAlert('Job cancellation requested', 'success');
+                    loadAllJobs();
+                } else {
+                    showAlert('Failed to cancel job: ' + data.error, 'error');
+                }
+            } catch (error) {
+                showAlert('Error cancelling job: ' + error.message, 'error');
+            }
         }
     </script>
 </body>

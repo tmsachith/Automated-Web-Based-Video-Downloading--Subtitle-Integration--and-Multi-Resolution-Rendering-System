@@ -174,20 +174,37 @@ class SubtitleProcessor:
         if not output_path:
             output_path = DIRS['processing'] / f"{video_path.stem}_hardsubbed.mp4"
         
+        # Import here to avoid circular dependency
+        from config import PROCESSING_CONFIG
+        low_memory = PROCESSING_CONFIG.get('low_memory_mode', False)
+        
         try:
             # Escape subtitle path for FFmpeg filter
             # Windows paths need special handling
             subtitle_filter_path = str(subtitle_path).replace('\\', '/').replace(':', '\\\\:')
             
+            # Memory-optimized settings for cloud environments
+            if low_memory:
+                logger.info("Using low-memory optimization for cloud environment")
+                preset = 'veryfast'  # Faster, less memory
+                crf = 28  # Higher CRF = lower quality but much less memory
+                threads = 2  # Limit threads to reduce memory
+            else:
+                preset = FFMPEG_CONFIG['preset']
+                crf = FFMPEG_CONFIG['crf']
+                threads = 0  # Auto
+            
             # FFmpeg command for hard subtitle burning
             cmd = [
                 'ffmpeg',
                 '-i', str(video_path),
-                '-vf', f"subtitles='{subtitle_filter_path}'",
+                '-vf', f"subtitles='{subtitle_filter_path}':force_style='FontSize=20'",  # Smaller font reduces memory
                 '-c:v', FFMPEG_CONFIG['video_codec'],
-                '-crf', str(FFMPEG_CONFIG['crf']),
-                '-preset', FFMPEG_CONFIG['preset'],
+                '-crf', str(crf),
+                '-preset', preset,
+                '-threads', str(threads),
                 '-c:a', 'copy',  # Copy audio stream
+                '-max_muxing_queue_size', '1024',  # Prevent memory overflow
                 '-y',  # Overwrite output
                 str(output_path)
             ]
@@ -213,10 +230,22 @@ class SubtitleProcessor:
             process.wait()
             
             if process.returncode != 0:
-                raise SubtitleError(f"FFmpeg process failed with code {process.returncode}")
+                error_msg = f"FFmpeg process failed with code {process.returncode}"
+                
+                # Specific error messages for common Railway issues
+                if process.returncode == -9:
+                    error_msg += " (Process killed - likely out of memory. Try using soft subtitles or upgrade Railway plan)"
+                elif process.returncode == 137:
+                    error_msg += " (Out of memory error. Railway free tier has 512MB limit)"
+                elif process.returncode == 1:
+                    error_msg += " (Encoding error - check video format and subtitle file)"
+                
+                logger.error(error_msg)
+                raise SubtitleError(error_msg)
             
             if output_path.exists():
-                logger.info(f"Hard subtitles burned successfully: {output_path}")
+                file_size = output_path.stat().st_size / (1024 * 1024)
+                logger.info(f"Hard subtitles burned successfully: {output_path} ({file_size:.2f} MB)")
                 return output_path
             else:
                 raise SubtitleError("Output file was not created")
@@ -224,6 +253,9 @@ class SubtitleProcessor:
         except subprocess.CalledProcessError as e:
             raise SubtitleError(f"Failed to burn hard subtitles: {e}")
         except Exception as e:
+            error_str = str(e)
+            if 'killed' in error_str.lower() or 'code -9' in error_str:
+                raise SubtitleError(f"Process killed by system (out of memory). Use soft subtitles instead or upgrade server. Original error: {e}")
             raise SubtitleError(f"Unexpected error during subtitle burning: {e}")
     
     def process_subtitle(

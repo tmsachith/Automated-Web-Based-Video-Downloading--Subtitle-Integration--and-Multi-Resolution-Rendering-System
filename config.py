@@ -94,10 +94,14 @@ LOG_CONFIG = {
     'log_level': 'INFO'
 }
 
+# Cloud/Railway environment detection
+IS_CLOUD_ENV = os.getenv('RAILWAY_ENVIRONMENT') is not None or os.getenv('DYNO') is not None
+
 # Processing settings
 PROCESSING_CONFIG = {
     'cleanup_temp_files': True,
     'keep_original_files': False,  # Don't keep originals to save space (especially for cloud)
+    'low_memory_mode': IS_CLOUD_ENV,  # Enable memory optimizations on cloud platforms
     'batch_processing': False,
     'parallel_encoding': False  # Encode multiple resolutions simultaneously
 }
