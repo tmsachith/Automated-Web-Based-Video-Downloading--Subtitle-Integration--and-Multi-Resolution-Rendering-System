@@ -367,15 +367,27 @@
         </div>
         
         <div class="content">
+            <div class="info-box" id="systemStatus" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <strong>🖥️ System Status:</strong>
+                        <span id="statusText">Checking...</span>
+                    </div>
+                    <div id="runningJobInfo" style="display: none; font-size: 12px; background: rgba(255,255,255,0.2); padding: 5px 10px; border-radius: 5px;">
+                        <span id="runningJobMsg"></span>
+                    </div>
+                </div>
+            </div>
+            
             <div class="info-box">
                 <strong>ℹ️ How it works:</strong>
                 <ul>
-                    <li>Provide direct download link for video OR enter URL</li>
-                    <li>Upload subtitle file (.srt) OR provide download link</li>
-                    <li>System automatically processes your media</li>
-                    <li>Subtitles are embedded (soft or hard burned)</li>
-                    <li>Video is encoded to selected resolutions</li>
-                    <li>Download the processed files when ready</li>
+                    <li>✅ <strong>Jobs run in background</strong> - Close browser after submitting</li>
+                    <li>📊 Check status anytime by reopening this page</li>
+                    <li>⚡ Only 1 job runs at a time (Railway free: 2 vCPU, 1GB RAM)</li>
+                    <li>🎯 Use <strong>Soft Subtitles</strong> for production (fast!)</li>
+                    <li>🎬 Subtitles embedded + video encoded to multiple resolutions</li>
+                    <li>💾 Download processed files when complete</li>
                 </ul>
             </div>
             
@@ -463,11 +475,17 @@
                     <div class="subtitle-mode">
                         <div class="radio-item">
                             <input type="radio" id="softSub" name="subtitleMode" value="soft" checked>
-                            <label for="softSub">Soft Subtitle (Embedded)</label>
+                            <label for="softSub">✅ Soft Subtitle (Fast, ~1 min, Recommended)</label>
                         </div>
                         <div class="radio-item">
                             <input type="radio" id="hardSub" name="subtitleMode" value="hard">
-                            <label for="hardSub">Hard Subtitle (Burned)</label>
+                            <label for="hardSub">⚠️ Hard Subtitle (Very Slow, 10-30 min)</label>
+                        </div>
+                    </div>
+                    <div id="hardSubWarning" style="display: none; background: #fff3cd; border: 1px solid #ffc107; border-radius: 5px; padding: 10px; margin-top: 10px; font-size: 13px;">
+                        <strong>⚠️ Warning:</strong> Hard subtitles burn text into every video frame, taking 10-30 minutes and 100% CPU.
+                        <br><strong>💡 Production Tip:</strong> Use Soft Subtitles for instant processing!</div>
+                    </div>
                         </div>
                     </div>
                 </div>
@@ -481,18 +499,68 @@
                 <h2>Jobs Status</h2>
                 <div id="jobsList"></div>
             </div>
+            
+            <div class="status-section" id="fileBrowserSection" style="margin-top: 30px;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <h2>📁 File Browser (Railway Storage)</h2>
+                    <button onclick="loadFileBrowser()" style="padding: 8px 15px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer;">
+                        🔄 Refresh Files
+                    </button>
+                </div>
+                <div id="fileBrowserContent" style="margin-top: 15px;">
+                    <p style="color: #666; text-align: center;">Click refresh to view files on Railway server</p>
+                </div>
+            </div>
         </div>
     </div>
     
     <script>
         let statusCheckInterval = null;
         let allJobs = [];
+        let systemStatus = null;
         
-        // Load all jobs on page load
+        // Load all jobs and system status on page load
         window.addEventListener('load', () => {
+            loadSystemStatus();
             loadAllJobs();
             startStatusCheck();
         });
+        
+        // Check system status
+        async function loadSystemStatus() {
+            try {
+                const response = await fetch('/api/system/status');
+                const data = await response.json();
+                
+                if (data.success) {
+                    systemStatus = data;
+                    updateSystemStatusDisplay();
+                }
+            } catch (error) {
+                console.error('Failed to load system status:', error);
+            }
+        }
+        
+        // Update system status display
+        function updateSystemStatusDisplay() {
+            const statusText = document.getElementById('statusText');
+            const runningJobInfo = document.getElementById('runningJobInfo');
+            const runningJobMsg = document.getElementById('runningJobMsg');
+            const submitBtn = document.getElementById('submitBtn');
+            
+            if (systemStatus.has_running_job) {
+                statusText.textContent = '🔴 JOB RUNNING';
+                statusText.style.color = '#ffd700';
+                runningJobInfo.style.display = 'block';
+                runningJobMsg.textContent = `Job ${systemStatus.running_job_id.slice(-8)} is processing...`;
+                if (submitBtn) submitBtn.disabled = true;
+            } else {
+                statusText.textContent = '🟢 READY FOR NEW JOB';
+                statusText.style.color = '#90EE90';
+                runningJobInfo.style.display = 'none';
+                if (submitBtn) submitBtn.disabled = false;
+            }
+        }
         
         // Toggle between URL and file upload
         document.getElementById('urlToggle').addEventListener('click', function() {
@@ -507,6 +575,15 @@
             document.getElementById('urlToggle').classList.remove('active');
             document.getElementById('uploadSection').classList.add('active');
             document.getElementById('urlSection').classList.remove('active');
+        });
+        
+        // Show warning when hard subtitle is selected
+        document.getElementById('hardSub').addEventListener('change', function() {
+            document.getElementById('hardSubWarning').style.display = 'block';
+        });
+        
+        document.getElementById('softSub').addEventListener('change', function() {
+            document.getElementById('hardSubWarning').style.display = 'none';
         });
         
         // File upload handling
@@ -549,6 +626,12 @@
         
         document.getElementById('processingForm').addEventListener('submit', async (e) => {
             e.preventDefault();
+            
+            // Check if a job is already running
+            if (systemStatus && systemStatus.has_running_job) {
+                showAlert('⚠️ A job is already running! Please wait for it to complete or cancel it first.', 'error');
+                return;
+            }
             
             const videoUrl = document.getElementById('videoUrl').value;
             const subtitleMode = document.querySelector('input[name="subtitleMode"]:checked').value;
@@ -595,8 +678,9 @@
                     const data = await response.json();
                     
                     if (data.success) {
-                        showAlert(`Job submitted successfully! Job ID: ${data.job_id}`, 'success');
+                        showAlert(`✅ Job submitted! ID: ${data.job_id.slice(-8)}. You can close this tab - job runs in background!`, 'success');
                         document.getElementById('statusSection').style.display = 'block';
+                        loadSystemStatus();
                         loadAllJobs();
                     } else {
                         showAlert(`Error: ${data.error}`, 'error');
@@ -626,8 +710,9 @@
                     const data = await response.json();
                     
                     if (data.success) {
-                        showAlert(`Job submitted successfully! Job ID: ${data.job_id}`, 'success');
+                        showAlert(`✅ Job submitted! ID: ${data.job_id.slice(-8)}. You can close this tab - job runs in background!`, 'success');
                         document.getElementById('statusSection').style.display = 'block';
+                        loadSystemStatus();
                         loadAllJobs();
                     } else {
                         showAlert(`Error: ${data.error}`, 'error');
@@ -660,6 +745,9 @@
                     allJobs = data.jobs;
                     updateJobsDisplay();
                 }
+                
+                // Also refresh system status
+                await loadSystemStatus();
             } catch (error) {
                 console.error('Failed to load jobs:', error);
             }
@@ -854,6 +942,106 @@
             } catch (error) {
                 showAlert('Error cancelling job: ' + error.message, 'error');
             }
+        }
+        
+        // File browser functionality
+        async function loadFileBrowser() {
+            const content = document.getElementById('fileBrowserContent');
+            content.innerHTML = '<p style="text-align: center; color: #667eea;">Loading files...</p>';
+            
+            try {
+                const response = await fetch('/api/files/browse');
+                const data = await response.json();
+                
+                if (data.success) {
+                    displayFiles(data.files);
+                } else {
+                    content.innerHTML = `<p style="color: #d63031;">Error: ${data.error}</p>`;
+                }
+            } catch (error) {
+                content.innerHTML = `<p style="color: #d63031;">Failed to load files: ${error.message}</p>`;
+            }
+        }
+        
+        function displayFiles(files) {
+            const content = document.getElementById('fileBrowserContent');
+            
+            let html = `
+                <div style="background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+                    <strong>💾 Total Storage:</strong> ${files.total_size_mb} MB (${files.total_size_gb} GB)
+                    <br><small style="color: #666;">⚠️ Railway storage is ephemeral - files are deleted on restart/redeploy</small>
+                </div>
+            `;
+            
+            // Downloads folder
+            if (files.downloads.length > 0) {
+                html += `
+                    <div style="margin-bottom: 20px;">
+                        <h3 style="color: #667eea; margin-bottom: 10px;">📥 Downloads Folder (${files.downloads.length} files)</h3>
+                        <div style="background: white; border-radius: 8px; overflow: hidden;">
+                            ${files.downloads.map(file => `
+                                <div style="padding: 12px; border-bottom: 1px solid #e0e0e0; display: flex; justify-content: space-between; align-items: center;">
+                                    <div style="flex: 1;">
+                                        <div style="font-weight: 600; color: #333;">${file.name}</div>
+                                        <div style="font-size: 12px; color: #666;">
+                                            ${file.size_mb} MB • ${new Date(file.modified).toLocaleString()}
+                                        </div>
+                                    </div>
+                                    <a href="/api/files/download/${encodeURIComponent(file.path)}" 
+                                       style="padding: 8px 15px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; font-size: 13px;">
+                                        ⬇️ Download
+                                    </a>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                `;
+            }
+            
+            // Outputs folder by resolution
+            const resolutions = Object.keys(files.outputs);
+            if (resolutions.length > 0) {
+                html += `<h3 style="color: #667eea; margin-bottom: 10px;">🎬 Output Videos</h3>`;
+                
+                resolutions.forEach(resolution => {
+                    const resFiles = files.outputs[resolution];
+                    if (resFiles.length > 0) {
+                        html += `
+                            <div style="margin-bottom: 15px;">
+                                <h4 style="color: #764ba2; margin-bottom: 8px;">${resolution} (${resFiles.length} files)</h4>
+                                <div style="background: white; border-radius: 8px; overflow: hidden;">
+                                    ${resFiles.map(file => `
+                                        <div style="padding: 12px; border-bottom: 1px solid #e0e0e0; display: flex; justify-content: space-between; align-items: center;">
+                                            <div style="flex: 1;">
+                                                <div style="font-weight: 600; color: #333;">${file.name}</div>
+                                                <div style="font-size: 12px; color: #666;">
+                                                    ${file.size_mb} MB • ${new Date(file.modified).toLocaleString()}
+                                                </div>
+                                            </div>
+                                            <div style="display: flex; gap: 8px;">
+                                                <a href="/api/stream/${file.path.split('/').slice(-2)[0]}/${resolution}" 
+                                                   style="padding: 8px 15px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; font-size: 13px;">
+                                                    ▶️ Stream
+                                                </a>
+                                                <a href="/api/files/download/${encodeURIComponent(file.path)}" 
+                                                   style="padding: 8px 15px; background: #764ba2; color: white; text-decoration: none; border-radius: 5px; font-size: 13px;">
+                                                    ⬇️ Download
+                                                </a>
+                                            </div>
+                                        </div>
+                                    `).join('')}
+                                </div>
+                            </div>
+                        `;
+                    }
+                });
+            }
+            
+            if (files.downloads.length === 0 && resolutions.length === 0) {
+                html += '<p style="text-align: center; color: #666; padding: 40px;">No files found. Complete a job to see files here.</p>';
+            }
+            
+            content.innerHTML = html;
         }
     </script>
 </body>

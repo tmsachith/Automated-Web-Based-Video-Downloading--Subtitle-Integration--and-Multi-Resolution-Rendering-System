@@ -21,6 +21,8 @@ app.config['UPLOAD_FOLDER'] = DIRS['downloads']
 active_jobs = {}
 completed_jobs = {}
 cancelled_jobs = set()  # Track cancelled job IDs
+queued_jobs = []  # Queue of pending jobs
+current_running_job = None  # Track the single running job
 
 # Allowed subtitle extensions
 ALLOWED_EXTENSIONS = {'.srt', '.ass', '.vtt', '.sub', '.ssa'}
@@ -124,7 +126,12 @@ class JobProcessor(threading.Thread):
     
     def run(self):
         """Execute the processing job"""
+        global current_running_job
+        
         try:
+            # Mark this job as currently running
+            current_running_job = self.job_id
+            
             # Initialize tasks
             tasks = [
                 {'name': 'Download Video', 'status': 'pending'},
@@ -188,10 +195,18 @@ class JobProcessor(threading.Thread):
                 
                 self.update_progress('Burning subtitles into video frames', 30, 100, 'in-progress')
                 
+                # Add progress callback for hard subtitle burning
+                def subtitle_progress(current_sec, total_sec):
+                    if total_sec > 0:
+                        # Map 30-90% of progress bar to subtitle burning
+                        percentage = 30 + int((current_sec / total_sec) * 60)
+                        self.update_progress(f'Burning subtitles ({int(current_sec)}s / {int(total_sec)}s)', percentage, 100, 'in-progress')
+                
                 processed_video = processor.process_subtitle(
                     video_path,
                     subtitle_path,
-                    self.use_soft_subtitle
+                    self.use_soft_subtitle,
+                    progress_callback=subtitle_progress if not self.use_soft_subtitle else None
                 )
                 
                 self.update_progress('Processing subtitles', 100, 100, 'completed')
@@ -266,6 +281,9 @@ class JobProcessor(threading.Thread):
             if self.job_id in active_jobs:
                 del active_jobs[self.job_id]
             
+            # Clear running job marker
+            current_running_job = None
+            
             # Save state to disk
             save_jobs_to_disk()
                 
@@ -287,6 +305,9 @@ class JobProcessor(threading.Thread):
             if self.job_id in cancelled_jobs:
                 cancelled_jobs.remove(self.job_id)
             
+            # Clear running job marker
+            current_running_job = None
+            
             # Save state to disk
             save_jobs_to_disk()
 
@@ -300,7 +321,17 @@ def index():
 @app.route('/api/submit', methods=['POST'])
 def submit_job():
     """Submit a new processing job"""
+    global current_running_job
+    
     try:
+        # Check if a job is already running
+        if current_running_job is not None:
+            return jsonify({
+                'success': False,
+                'error': 'A job is already running. Please wait for it to complete or cancel it first.',
+                'running_job_id': current_running_job
+            }), 409  # Conflict status
+        
         data = request.json
         
         video_url = data.get('video_url')
@@ -355,7 +386,17 @@ def submit_job():
 @app.route('/api/submit_with_file', methods=['POST'])
 def submit_job_with_file():
     """Submit a new processing job with uploaded subtitle file"""
+    global current_running_job
+    
     try:
+        # Check if a job is already running
+        if current_running_job is not None:
+            return jsonify({
+                'success': False,
+                'error': 'A job is already running. Please wait for it to complete or cancel it first.',
+                'running_job_id': current_running_job
+            }), 409  # Conflict status
+        
         video_url = request.form.get('video_url')
         subtitle_file = request.files.get('subtitle_file')
         resolutions = json.loads(request.form.get('resolutions', '["360p", "480p", "720p", "1080p"]'))
@@ -573,6 +614,105 @@ def download_file(job_id, resolution):
         as_attachment=True,
         download_name=file_path.name
     )
+
+
+@app.route('/api/files/browse')
+def browse_files():
+    """Browse all files in downloads and outputs directories"""
+    try:
+        files_info = {
+            'downloads': [],
+            'outputs': {},
+            'total_size': 0
+        }
+        
+        # List downloads folder
+        if DIRS['downloads'].exists():
+            for file_path in DIRS['downloads'].iterdir():
+                if file_path.is_file():
+                    size = file_path.stat().st_size
+                    files_info['downloads'].append({
+                        'name': file_path.name,
+                        'size': size,
+                        'size_mb': round(size / (1024 * 1024), 2),
+                        'modified': datetime.fromtimestamp(file_path.stat().st_mtime).isoformat(),
+                        'path': str(file_path.relative_to(DIRS['downloads'].parent))
+                    })
+                    files_info['total_size'] += size
+        
+        # List outputs folder by resolution
+        if DIRS['outputs'].exists():
+            for resolution_dir in DIRS['outputs'].iterdir():
+                if resolution_dir.is_dir():
+                    resolution_files = []
+                    for file_path in resolution_dir.iterdir():
+                        if file_path.is_file():
+                            size = file_path.stat().st_size
+                            resolution_files.append({
+                                'name': file_path.name,
+                                'size': size,
+                                'size_mb': round(size / (1024 * 1024), 2),
+                                'modified': datetime.fromtimestamp(file_path.stat().st_mtime).isoformat(),
+                                'path': str(file_path.relative_to(DIRS['outputs'].parent))
+                            })
+                            files_info['total_size'] += size
+                    files_info['outputs'][resolution_dir.name] = resolution_files
+        
+        files_info['total_size_mb'] = round(files_info['total_size'] / (1024 * 1024), 2)
+        files_info['total_size_gb'] = round(files_info['total_size'] / (1024 * 1024 * 1024), 2)
+        
+        return jsonify({
+            'success': True,
+            'files': files_info
+        })
+    except Exception as e:
+        logger.error(f"Failed to browse files: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/files/download/<path:filepath>')
+def download_file_direct(filepath):
+    """Download any file by relative path"""
+    try:
+        # Security: ensure path doesn't escape base directory
+        base_dir = DIRS['downloads'].parent
+        file_path = (base_dir / filepath).resolve()
+        
+        if not str(file_path).startswith(str(base_dir)):
+            return jsonify({'error': 'Invalid file path'}), 403
+        
+        if not file_path.exists():
+            return jsonify({'error': 'File not found'}), 404
+        
+        return send_file(
+            file_path,
+            as_attachment=True,
+            download_name=file_path.name
+        )
+    except Exception as e:
+        logger.error(f"Failed to download file: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/system/status')
+def system_status():
+    """Get system status including running job and capacity"""
+    return jsonify({
+        'success': True,
+        'has_running_job': current_running_job is not None,
+        'running_job_id': current_running_job,
+        'active_jobs_count': len(active_jobs),
+        'completed_jobs_count': len(completed_jobs),
+        'can_submit_new_job': current_running_job is None,
+        'system_info': {
+            'plan': 'Railway Free (2 vCPU, 1GB RAM)',
+            'max_concurrent_jobs': 1,
+            'recommendation': 'Close browser tab after submitting - jobs run in background'
+        }
+    })
 
 
 @app.route('/health')

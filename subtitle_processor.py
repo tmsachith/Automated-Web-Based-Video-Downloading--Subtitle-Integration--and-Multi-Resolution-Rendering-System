@@ -154,15 +154,18 @@ class SubtitleProcessor:
         self,
         video_path: Path,
         subtitle_path: Path,
-        output_path: Optional[Path] = None
+        output_path: Optional[Path] = None,
+        progress_callback=None
     ) -> Path:
         """
         Burn subtitle permanently into video frames (hard subtitle)
+        WARNING: This is very slow (10-30 minutes) and CPU-intensive!
         
         Args:
             video_path: Path to input video
             subtitle_path: Path to subtitle file
             output_path: Optional output path
+            progress_callback: Function(current_seconds, total_seconds) for progress
             
         Returns:
             Path to output video with burned subtitles
@@ -210,7 +213,13 @@ class SubtitleProcessor:
             ]
             
             logger.debug(f"FFmpeg command: {' '.join(cmd)}")
-            logger.info("This may take several minutes depending on video length...")
+            logger.warning("⚠️ HARD SUBTITLE BURNING IS VERY SLOW (10-30 min)!")
+            logger.warning("💡 For production, use SOFT SUBTITLES (takes <1 minute)")
+            logger.info("Processing every video frame with subtitle overlay...")
+            
+            # Get video duration for progress calculation
+            video_info = self.get_video_info(video_path)
+            total_duration = video_info.get('duration', 0)
             
             # Run with progress output
             process = subprocess.Popen(
@@ -221,11 +230,23 @@ class SubtitleProcessor:
                 universal_newlines=True
             )
             
-            # Monitor progress
+            # Monitor progress with FFmpeg output parsing
+            import re
             for line in process.stdout:
                 if 'time=' in line:
-                    # Extract and log progress
-                    logger.debug(line.strip())
+                    # Parse FFmpeg progress: time=00:01:23.45
+                    time_match = re.search(r'time=(\d{2}):(\d{2}):(\d{2}\.\d{2})', line)
+                    if time_match and total_duration > 0:
+                        hours, minutes, seconds = map(float, time_match.groups())
+                        current_seconds = hours * 3600 + minutes * 60 + seconds
+                        
+                        if progress_callback:
+                            progress_callback(current_seconds, total_duration)
+                        
+                        # Log progress every 10%
+                        progress_pct = (current_seconds / total_duration) * 100
+                        if int(progress_pct) % 10 == 0:
+                            logger.info(f"Progress: {progress_pct:.1f}% ({current_seconds:.0f}/{total_duration:.0f}s)")
             
             process.wait()
             
@@ -262,7 +283,8 @@ class SubtitleProcessor:
         self,
         video_path: Path,
         subtitle_path: Path,
-        use_soft_subtitle: Optional[bool] = None
+        use_soft_subtitle: Optional[bool] = None,
+        progress_callback=None
     ) -> Path:
         """
         Process subtitle based on configuration (soft or hard)
@@ -271,6 +293,7 @@ class SubtitleProcessor:
             video_path: Path to video file
             subtitle_path: Path to subtitle file
             use_soft_subtitle: Override config setting
+            progress_callback: Function(current, total) for progress updates
             
         Returns:
             Path to processed video
@@ -287,9 +310,12 @@ class SubtitleProcessor:
         )
         
         if soft_sub:
+            logger.info("✓ Soft subtitles are FAST (~1 minute)")
             return self.embed_soft_subtitle(video_path, subtitle_path)
         else:
-            return self.embed_hard_subtitle(video_path, subtitle_path)
+            logger.warning("⚠️ Hard subtitles are VERY SLOW (10-30 minutes)!")
+            logger.warning("💡 Consider using soft subtitles for production")
+            return self.embed_hard_subtitle(video_path, subtitle_path, progress_callback=progress_callback)
 
 
 if __name__ == '__main__':
