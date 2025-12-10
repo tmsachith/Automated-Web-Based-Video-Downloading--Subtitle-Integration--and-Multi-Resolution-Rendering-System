@@ -116,16 +116,18 @@ class SubtitleProcessor:
             output_path = DIRS['processing'] / f"{video_path.stem}_subtitled.mp4"
         
         try:
-            # FFmpeg command for soft subtitle embedding
+            # FFmpeg command for soft subtitle embedding with UTF-8 support
+            # -sub_charenc utf-8 ensures proper Unicode/Sinhala character handling
             cmd = [
                 'ffmpeg',
+                '-sub_charenc', 'utf-8',  # Force UTF-8 encoding for subtitles
                 '-i', str(video_path),
                 '-i', str(subtitle_path),
                 '-c:v', 'copy',  # Copy video stream (no re-encoding)
                 '-c:a', 'copy',  # Copy audio stream
                 '-c:s', self.subtitle_codec,  # Subtitle codec
-                '-metadata:s:s:0', 'language=eng',  # Set subtitle language
-                '-metadata:s:s:0', 'title=English',  # Set subtitle title
+                '-metadata:s:s:0', 'language=sin',  # Set subtitle language to Sinhala
+                '-metadata:s:s:0', 'title=Sinhala',  # Set subtitle title
                 '-disposition:s:0', 'default',  # Make subtitle default
                 '-y',  # Overwrite output
                 str(output_path)
@@ -197,11 +199,16 @@ class SubtitleProcessor:
                 crf = FFMPEG_CONFIG['crf']
                 threads = 0  # Auto
             
-            # FFmpeg command for hard subtitle burning
+            # Get Unicode font for Sinhala support
+            unicode_fonts = SUBTITLE_CONFIG.get('unicode_fonts', ['Noto Sans Sinhala', 'DejaVu Sans'])
+            font_name = unicode_fonts[0] if unicode_fonts else 'DejaVu Sans'
+            
+            # FFmpeg command for hard subtitle burning with Unicode support
+            # force_style sets font to support Sinhala/Unicode characters
             cmd = [
                 'ffmpeg',
                 '-i', str(video_path),
-                '-vf', f"subtitles='{subtitle_filter_path}':force_style='FontSize=20'",  # Smaller font reduces memory
+                '-vf', f"subtitles='{subtitle_filter_path}':force_style='FontName={font_name},FontSize=20,Encoding=utf-8'",
                 '-c:v', FFMPEG_CONFIG['video_codec'],
                 '-crf', str(crf),
                 '-preset', preset,
