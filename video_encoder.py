@@ -84,7 +84,8 @@ class VideoEncoder:
         self,
         input_video: Path,
         resolution_name: str,
-        output_dir: Optional[Path] = None
+        output_dir: Optional[Path] = None,
+        cancel_check=None
     ) -> Path:
         """
         Encode video to specific resolution
@@ -93,6 +94,7 @@ class VideoEncoder:
             input_video: Path to input video
             resolution_name: Resolution key (e.g., '720p')
             output_dir: Optional output directory
+            cancel_check: Optional function() -> bool to check for cancellation
             
         Returns:
             Path to encoded video
@@ -168,8 +170,21 @@ class VideoEncoder:
                 universal_newlines=True
             )
             
-            # Monitor encoding progress
+            # Monitor encoding progress with cancellation check
+            import time
             for line in process.stdout:
+                # Check for cancellation
+                if cancel_check and cancel_check():
+                    logger.warning(f"Cancelling {resolution_name} encoding...")
+                    process.terminate()
+                    time.sleep(0.5)
+                    if process.poll() is None:  # Still running
+                        process.kill()
+                    # Delete partial output file
+                    if output_path.exists():
+                        output_path.unlink()
+                    raise EncodingError(f"{resolution_name} encoding cancelled by user")
+                
                 if 'time=' in line and 'speed=' in line:
                     # Log progress periodically
                     logger.debug(line.strip())

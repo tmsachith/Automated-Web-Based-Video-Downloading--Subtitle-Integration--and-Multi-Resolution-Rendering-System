@@ -94,7 +94,8 @@ class Downloader:
         destination: Path,
         file_type: str = 'video',
         filename: Optional[str] = None,
-        progress_callback=None
+        progress_callback=None,
+        cancel_check=None
     ) -> Path:
         """
         Download file from URL with progress callback
@@ -104,7 +105,8 @@ class Downloader:
             destination: Destination directory
             file_type: Type of file ('video' or 'subtitle')
             filename: Optional custom filename
-            progress_callback: Function(current_bytes, total_bytes) for progress updates
+            progress_callback: Function(current_bytes, total_bytes, speed, eta) for progress updates
+            cancel_check: Function() -> bool to check if download should be cancelled
             
         Returns:
             Path to downloaded file
@@ -158,6 +160,14 @@ class Downloader:
                 with open(file_path, 'wb') as f:
                     for chunk in response.iter_content(chunk_size=self.chunk_size):
                         if chunk:
+                            # Check for cancellation before writing chunk
+                            if cancel_check and cancel_check():
+                                logger.warning("Download cancelled by user")
+                                f.close()
+                                if file_path.exists():
+                                    file_path.unlink()  # Delete partial file
+                                raise DownloadError("Download cancelled by user")
+                            
                             f.write(chunk)
                             downloaded += len(chunk)
                             

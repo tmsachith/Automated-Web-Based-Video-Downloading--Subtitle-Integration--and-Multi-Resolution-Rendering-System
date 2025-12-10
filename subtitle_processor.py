@@ -157,7 +157,8 @@ class SubtitleProcessor:
         video_path: Path,
         subtitle_path: Path,
         output_path: Optional[Path] = None,
-        progress_callback=None
+        progress_callback=None,
+        cancel_check=None
     ) -> Path:
         """
         Burn subtitle permanently into video frames (hard subtitle)
@@ -168,6 +169,7 @@ class SubtitleProcessor:
             subtitle_path: Path to subtitle file
             output_path: Optional output path
             progress_callback: Function(current_seconds, total_seconds) for progress
+            cancel_check: Optional function() -> bool to check for cancellation
             
         Returns:
             Path to output video with burned subtitles
@@ -246,9 +248,22 @@ class SubtitleProcessor:
                 universal_newlines=True
             )
             
-            # Monitor progress with FFmpeg output parsing
+            # Monitor progress with FFmpeg output parsing and cancellation check
             import re
+            import time
             for line in process.stdout:
+                # Check for cancellation
+                if cancel_check and cancel_check():
+                    logger.warning("Cancelling hard subtitle burning...")
+                    process.terminate()
+                    time.sleep(0.5)
+                    if process.poll() is None:  # Still running
+                        process.kill()
+                    # Delete partial output file
+                    if output_path.exists():
+                        output_path.unlink()
+                    raise SubtitleError("Hard subtitle burning cancelled by user")
+                
                 if 'time=' in line:
                     # Parse FFmpeg progress: time=00:01:23.45
                     time_match = re.search(r'time=(\d{2}):(\d{2}):(\d{2}\.\d{2})', line)
@@ -300,7 +315,8 @@ class SubtitleProcessor:
         video_path: Path,
         subtitle_path: Path,
         use_soft_subtitle: Optional[bool] = None,
-        progress_callback=None
+        progress_callback=None,
+        cancel_check=None
     ) -> Path:
         """
         Process subtitle based on configuration (soft or hard)
@@ -310,6 +326,7 @@ class SubtitleProcessor:
             subtitle_path: Path to subtitle file
             use_soft_subtitle: Override config setting
             progress_callback: Function(current, total) for progress updates
+            cancel_check: Optional function() -> bool to check for cancellation
             
         Returns:
             Path to processed video
@@ -331,7 +348,7 @@ class SubtitleProcessor:
         else:
             logger.warning("⚠️ Hard subtitles are VERY SLOW (10-30 minutes)!")
             logger.warning("💡 Consider using soft subtitles for production")
-            return self.embed_hard_subtitle(video_path, subtitle_path, progress_callback=progress_callback)
+            return self.embed_hard_subtitle(video_path, subtitle_path, progress_callback=progress_callback, cancel_check=cancel_check)
 
 
 if __name__ == '__main__':

@@ -164,7 +164,8 @@ class JobProcessor(threading.Thread):
                     self.video_url,
                     DIRS['downloads'],
                     file_type='video',
-                    progress_callback=lambda cur, tot, spd=0, eta=0: self.update_progress('Downloading video', cur, tot, 'in-progress', spd, eta)
+                    progress_callback=lambda cur, tot, spd=0, eta=0: self.update_progress('Downloading video', cur, tot, 'in-progress', spd, eta),
+                    cancel_check=self.check_cancelled
                 )
                 
                 if self.check_cancelled():
@@ -206,7 +207,8 @@ class JobProcessor(threading.Thread):
                     video_path,
                     subtitle_path,
                     self.use_soft_subtitle,
-                    progress_callback=subtitle_progress if not self.use_soft_subtitle else None
+                    progress_callback=subtitle_progress if not self.use_soft_subtitle else None,
+                    cancel_check=self.check_cancelled
                 )
                 
                 self.update_progress('Processing subtitles', 100, 100, 'completed')
@@ -236,7 +238,8 @@ class JobProcessor(threading.Thread):
                     
                     output_files[resolution] = encoder.encode_resolution(
                         processed_video,
-                        resolution
+                        resolution,
+                        cancel_check=self.check_cancelled
                     )
                     
                     # Update after completion of this resolution
