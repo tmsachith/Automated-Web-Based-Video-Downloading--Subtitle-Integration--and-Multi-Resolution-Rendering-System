@@ -115,23 +115,29 @@ class SubtitleProcessor:
             raise SubtitleError(f"Error reading video metadata: {e}")
     
     def convert_srt_to_ass(self, srt_path: Path, ass_path: Path) -> bool:
-        """Converts an SRT subtitle file to ASS format with default styling."""
+        """Converts an SRT subtitle file to ASS format."""
         try:
-            # Basic ASS style matching the previous force_style
-            style = "FontName=Noto Sans Sinhala,FontSize=24,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=2,Shadow=1,Bold=0"
+            # The -y option overwrites the output file if it exists.
             command = [
                 'ffmpeg',
+                '-y', 
                 '-i', str(srt_path),
-                '-c:s', 'ass',
-                '-style', style,
                 str(ass_path)
             ]
             logger.info(f"Converting SRT to ASS: {' '.join(command)}")
-            process = subprocess.run(command, capture_output=True, text=True, check=True, encoding='utf-8')
+            # Using check=True will raise CalledProcessError on non-zero exit codes.
+            process = subprocess.run(
+                command, 
+                capture_output=True, 
+                text=True, 
+                check=True, 
+                encoding='utf-8'
+            )
             logger.info("Successfully converted SRT to ASS.")
             return True
         except subprocess.CalledProcessError as e:
-            logger.error(f"Error converting SRT to ASS: {e.stderr}")
+            # Log the standard error from FFmpeg to diagnose the issue.
+            logger.error(f"Error converting SRT to ASS. FFmpeg stderr:\n{e.stderr}")
             return False
         except Exception as e:
             logger.error(f"An unexpected error occurred during SRT to ASS conversion: {e}")
