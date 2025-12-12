@@ -285,13 +285,15 @@ class SubtitleProcessor:
                 arial_font = 'C\\\\\\\\:/Windows/Fonts/arial.ttf'
             watermark_filter = f"drawtext=text='{watermark_text}':fontfile={arial_font}:fontsize=24:fontcolor=white:borderw=2:bordercolor=black:x=(w-text_w)/2:y=30:enable='lt(t,10)'"
             
-            # Subtitle filter - Use bindumathi.ttf font for perfect Sinhala character rendering
-            fonts_dir_forward = str(project_fonts.absolute()).replace('\\', '/')
+            # Subtitle filter - Use direct fontfile path to bindumathi.ttf
+            # Get the full path to bindumathi font file
+            bindumathi_font_path = project_fonts / 'bindumathi.ttf'
+            bindumathi_font_forward = str(bindumathi_font_path.absolute()).replace('\\', '/')
             subtitle_filter_forward = str(subtitle_path.absolute()).replace('\\', '/')
             
-            # CRITICAL: Using bindumathi font for correct Sinhala character rendering
-            # Specify the exact font file name as it appears in the Fonts folder
-            subtitle_filter = f"subtitles='{subtitle_filter_forward}':fontsdir='{fonts_dir_forward}':force_style='Fontname=bindumathi,Fontsize=24,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=2,Shadow=1,Bold=0,Italic=0'"
+            # CRITICAL: Using fontfile parameter to directly specify the font file path
+            # This is more reliable than using Fontname with fontsdir
+            subtitle_filter = f"subtitles='{subtitle_filter_forward}':fontfile='{bindumathi_font_forward}':force_style='Fontsize=24,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=2,Shadow=1,Bold=0,Italic=0'"
             
             # Combine both filters: subtitles + watermark (watermark only shows for first 10 seconds)
             combined_filter = f"{subtitle_filter},{watermark_filter}"
