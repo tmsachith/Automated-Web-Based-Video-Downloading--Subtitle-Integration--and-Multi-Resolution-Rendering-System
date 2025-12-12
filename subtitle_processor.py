@@ -115,7 +115,7 @@ class SubtitleProcessor:
     
     def validate_subtitle_file(self, subtitle_path: Path) -> bool:
         """
-        Validate subtitle file format
+        Validate subtitle file format and ensure UTF-8 encoding
         
         Args:
             subtitle_path: Path to subtitle file
@@ -130,7 +130,26 @@ class SubtitleProcessor:
         if subtitle_path.stat().st_size == 0:
             raise SubtitleError(f"Subtitle file is empty: {subtitle_path}")
         
-        logger.info(f"Subtitle file validated: {subtitle_path}")
+        # Ensure subtitle file is UTF-8 encoded
+        try:
+            content = subtitle_path.read_text(encoding='utf-8')
+            # If we can read it as UTF-8, re-write to ensure BOM-free UTF-8
+            subtitle_path.write_text(content, encoding='utf-8')
+            logger.info(f"Subtitle file validated and ensured UTF-8: {subtitle_path}")
+        except UnicodeDecodeError:
+            # Try to read with different encodings and convert to UTF-8
+            logger.warning("Subtitle file is not UTF-8, attempting to convert...")
+            for encoding in ['utf-8-sig', 'latin-1', 'cp1252', 'iso-8859-1']:
+                try:
+                    content = subtitle_path.read_text(encoding=encoding)
+                    subtitle_path.write_text(content, encoding='utf-8')
+                    logger.info(f"Converted subtitle from {encoding} to UTF-8")
+                    break
+                except:
+                    continue
+            else:
+                raise SubtitleError("Could not decode subtitle file with any known encoding")
+        
         return True
     
     def embed_soft_subtitle(
@@ -247,31 +266,28 @@ class SubtitleProcessor:
             sinhala_font = self.find_sinhala_font()
             logger.info(f"Using font for subtitles: {sinhala_font}")
             
-            # Escape font path for FFmpeg (handle special characters)
-            sinhala_font_escaped = sinhala_font.replace('\\', '/').replace(':', '\\\\:')
+            # Convert Windows path to Unix-style for FFmpeg
+            # FFmpeg needs forward slashes and escaped colons
+            sinhala_font_ffmpeg = str(sinhala_font).replace('\\', '\\\\\\\\').replace(':', '\\\\:')
             
-            # Get project fonts directory for fontsdir parameter
+            # Get project fonts directory
             project_fonts = DIRS.get('fonts', Path('Fonts'))
             if not isinstance(project_fonts, Path):
                 project_fonts = Path('Fonts')
-            fonts_dir = str(project_fonts.absolute()).replace('\\', '/')
+            fonts_dir_ffmpeg = str(project_fonts.absolute()).replace('\\', '\\\\\\\\').replace(':', '\\\\:')
             
             # Create complex filter with subtitles + watermark text for first 10 seconds
-            # The watermark appears at the top for 10 seconds, subtitles appear normally at bottom
             watermark_text = "This is MovieDownloadSL..."
-            # Try to use project arial font or fallback
             arial_path = project_fonts / 'arial.ttf'
             if arial_path.exists():
-                arial_font = str(arial_path.absolute()).replace('\\', '/')
+                arial_font = str(arial_path.absolute()).replace('\\', '\\\\\\\\').replace(':', '\\\\:')
             else:
-                arial_font = '/Windows/Fonts/arial.ttf'
+                arial_font = 'C\\\\\\\\:/Windows/Fonts/arial.ttf'
             watermark_filter = f"drawtext=text='{watermark_text}':fontfile={arial_font}:fontsize=24:fontcolor=white:borderw=2:bordercolor=black:x=(w-text_w)/2:y=30:enable='lt(t,10)'"
             
-            # Subtitle filter with proper Unicode/Sinhala support using project font
-            # charenc=UTF-8: Force UTF-8 character encoding
-            # fontsdir: Point to project Fonts directory
-            # FontFile: Direct path to Sinhala font file
-            subtitle_filter = f"subtitles='{subtitle_filter_path}':charenc=UTF-8:fontsdir={fonts_dir}:force_style='FontFile={sinhala_font_escaped},FontSize=22,Bold=0,PrimaryColour=&HFFFFFF,OutlineColour=&H000000,Outline=2,BackColour=&H80000000'"
+            # Subtitle filter - Use FontName instead of FontFile for better compatibility
+            # The fontsdir parameter tells FFmpeg where to find the font
+            subtitle_filter = f"subtitles='{subtitle_filter_path}':fontsdir={fonts_dir_ffmpeg}:force_style='FontName=Noto Sans Sinhala,FontSize=24,Bold=0,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=2,Shadow=1'"
             
             # Combine both filters: subtitles + watermark (watermark only shows for first 10 seconds)
             combined_filter = f"{subtitle_filter},{watermark_filter}"
