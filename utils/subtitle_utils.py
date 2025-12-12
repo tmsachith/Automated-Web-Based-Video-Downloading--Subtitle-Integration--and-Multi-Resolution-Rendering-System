@@ -23,7 +23,7 @@ def srt_time_to_ass(t: str) -> str:
 
 
 def escape_ass_text(line: str) -> str:
-    """
+    r"""
     Escape text for ASS format and optionally convert HTML tags
     - Protects braces with backslashes
     - Converts HTML <font color> to ASS color overrides
