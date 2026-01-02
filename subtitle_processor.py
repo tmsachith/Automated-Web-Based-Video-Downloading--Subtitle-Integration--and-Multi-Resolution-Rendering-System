@@ -19,6 +19,83 @@ class SubtitleProcessor:
         self.soft_subtitle = SUBTITLE_CONFIG['soft_subtitle']
         self.subtitle_codec = SUBTITLE_CONFIG['subtitle_codec']
         self.burn_style = SUBTITLE_CONFIG['burn_style']
+
+    def _escape_ffmpeg_filter_path(self, path: Path) -> str:
+        """Escape a filesystem path for use inside an FFmpeg filter argument.
+
+        FFmpeg filter syntax treats ':' and '\\' specially on Windows paths.
+        Using forward slashes + escaping ':' is the most reliable approach.
+        """
+        # Forward slashes for FFmpeg
+        p = str(path.absolute()).replace('\\', '/')
+        # Escape the drive letter colon (and any other colons)
+        p = p.replace(':', r'\:')
+        # Escape single quotes for FFmpeg filter single-quoted strings
+        p = p.replace("'", r"\'")
+        return p
+
+    def _get_preferred_unicode_font_name(self) -> str:
+        """Pick a font family name that supports Sinhala/Unicode."""
+        project_fonts = DIRS.get('fonts', Path('Fonts'))
+        if not isinstance(project_fonts, Path):
+            project_fonts = Path('Fonts')
+
+        # Prefer fonts we ship with the repo for predictable rendering
+        if (project_fonts / 'NotoSansSinhala-Regular.ttf').exists() or (project_fonts / 'NotoSansSinhala.ttf').exists():
+            return 'Noto Sans Sinhala'
+        if (project_fonts / 'bindumathi.ttf').exists():
+            return 'Bindumathi'
+
+        # Fall back to configured list
+        for font_name in SUBTITLE_CONFIG.get('unicode_fonts', []):
+            if font_name:
+                return font_name
+
+        return self.burn_style.get('font_name', 'DejaVu Sans')
+
+    def ensure_ass_subtitle(self, subtitle_path: Path) -> Path:
+        """Ensure a subtitle file is in ASS format for reliable hard-burn rendering.
+
+        Sinhala (and many complex scripts) tend to render more consistently via ASS/libass,
+        and converting avoids edge cases with SRT parsing/encoding.
+        """
+        suffix = subtitle_path.suffix.lower()
+        if suffix in {'.ass', '.ssa'}:
+            return subtitle_path
+
+        # Normalize encoding first (so FFmpeg reads consistent UTF-8)
+        self.validate_subtitle_file(subtitle_path)
+
+        output_dir = DIRS.get('temp', Path('temp'))
+        if not isinstance(output_dir, Path):
+            output_dir = Path('temp')
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        ass_path = output_dir / f"{subtitle_path.stem}_converted.ass"
+
+        logger.info(f"Converting subtitle to ASS for hard burn: {subtitle_path.name} -> {ass_path.name}")
+
+        # FFmpeg can convert SRT/VTT/etc. into ASS directly.
+        # Use -sub_charenc to force UTF-8 decoding for text-based inputs.
+        cmd = [
+            'ffmpeg',
+            '-sub_charenc', 'UTF-8',
+            '-i', str(subtitle_path),
+            '-c:s', 'ass',
+            '-y',
+            str(ass_path)
+        ]
+
+        try:
+            subprocess.run(cmd, capture_output=True, text=True, check=True)
+        except subprocess.CalledProcessError as e:
+            logger.error(f"FFmpeg subtitle conversion stderr: {e.stderr}")
+            raise SubtitleError(f"Failed to convert subtitle to ASS: {e.stderr}")
+
+        if not ass_path.exists() or ass_path.stat().st_size == 0:
+            raise SubtitleError("ASS subtitle conversion failed (output not created)")
+
+        return ass_path
     
     def find_sinhala_font(self) -> str:
         """
@@ -139,7 +216,7 @@ class SubtitleProcessor:
         except UnicodeDecodeError:
             # Try to read with different encodings and convert to UTF-8
             logger.warning("Subtitle file is not UTF-8, attempting to convert...")
-            for encoding in ['utf-8-sig', 'latin-1', 'cp1252', 'iso-8859-1']:
+            for encoding in ['utf-8-sig', 'utf-16', 'utf-16-le', 'utf-16-be', 'cp1252', 'latin-1', 'iso-8859-1']:
                 try:
                     content = subtitle_path.read_text(encoding=encoding)
                     subtitle_path.write_text(content, encoding='utf-8')
@@ -237,7 +314,8 @@ class SubtitleProcessor:
         """
         logger.info("Burning hard subtitles into video...")
         
-        self.validate_subtitle_file(subtitle_path)
+        # Ensure text encoding is normalized and convert SRT->ASS for consistent Unicode shaping
+        subtitle_path_for_burn = self.ensure_ass_subtitle(subtitle_path)
         
         if not output_path:
             output_path = DIRS['processing'] / f"{video_path.stem}_hardsubbed.mp4"
@@ -249,7 +327,7 @@ class SubtitleProcessor:
         try:
             # Escape subtitle path for FFmpeg filter
             # Windows paths need special handling
-            subtitle_filter_path = str(subtitle_path).replace('\\', '/').replace(':', '\\\\:')
+            subtitle_filter_path = str(subtitle_path_for_burn).replace('\\', '/').replace(':', '\\\\:')
             
             # Memory-optimized settings for cloud environments
             if low_memory:
@@ -307,11 +385,33 @@ class SubtitleProcessor:
             os.environ['FONTCONFIG_FILE'] = str(fonts_conf_path.absolute())
             
             # Subtitle filter - libass will now find bindumathi from fonts.conf
-            subtitle_filter_forward = str(subtitle_path.absolute()).replace('\\', '/')
-            
-            # Use the font family name from the TTF file
-            # For bindumathi.ttf, the font family name is typically "Bindumathi"
-            subtitle_filter = f"subtitles='{subtitle_filter_forward}':force_style='Fontname=Bindumathi,Fontsize=24,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=2,Shadow=1,Bold=0,Italic=0'"
+            preferred_font_name = self._get_preferred_unicode_font_name()
+            subtitle_file_escaped = self._escape_ffmpeg_filter_path(subtitle_path_for_burn)
+            fonts_dir_escaped = self._escape_ffmpeg_filter_path(project_fonts)
+
+            font_size = int(self.burn_style.get('font_size', 24))
+            bold = 1 if self.burn_style.get('bold', False) else 0
+            primary = self.burn_style.get('primary_color', '&H00FFFFFF')
+            outline_color = self.burn_style.get('outline_color', '&H00000000')
+
+            # Critical for Sinhala:
+            # - fontsdir ensures libass can locate project Fonts on any OS
+            # - charenc=UTF-8 forces correct decoding for SRT/VTT text
+            # - FontName selects a Unicode/Sinhala-capable font
+            force_style = (
+                f"FontName={preferred_font_name},"
+                f"FontSize={font_size},"
+                f"PrimaryColour={primary},"
+                f"OutlineColour={outline_color},"
+                f"Outline=2,Shadow=1,Bold={bold},Italic=0"
+            )
+
+            subtitle_filter = (
+                f"subtitles=filename='{subtitle_file_escaped}':"
+                f"fontsdir='{fonts_dir_escaped}':"
+                f"charenc=UTF-8:"
+                f"force_style='{force_style}'"
+            )
             
             # Combine both filters: subtitles + watermark (watermark only shows for first 10 seconds)
             combined_filter = f"{subtitle_filter},{watermark_filter}"
