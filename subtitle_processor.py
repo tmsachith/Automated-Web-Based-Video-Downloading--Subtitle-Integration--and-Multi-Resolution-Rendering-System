@@ -58,6 +58,11 @@ class SubtitleProcessor:
         """
         suffix = subtitle_path.suffix.lower()
         if suffix in {'.ass', '.ssa'}:
+            # Still ensure the ASS has the desired Sinhala font in its Default style
+            try:
+                self.inject_font_into_ass(subtitle_path)
+            except Exception as e:
+                logger.debug(f"ASS font injection skipped/failed: {e}")
             return subtitle_path
 
         # Normalize encoding first (so FFmpeg reads consistent UTF-8)
@@ -92,7 +97,92 @@ class SubtitleProcessor:
         if not ass_path.exists() or ass_path.stat().st_size == 0:
             raise SubtitleError("ASS subtitle conversion failed (output not created)")
 
+        # Ensure the converted ASS explicitly uses a Sinhala-capable font in its style.
+        self.inject_font_into_ass(ass_path)
+
         return ass_path
+
+    def inject_font_into_ass(self, ass_path: Path, font_name: str = 'Noto Sans Sinhala') -> None:
+        """Inject/update the Default ASS style to use a Sinhala-capable font.
+
+        Note: ASS cannot truly embed a .ttf. This sets the style's Fontname field so libass
+        can pick the right font if available at runtime.
+        """
+        if not ass_path.exists() or ass_path.stat().st_size == 0:
+            raise SubtitleError(f"ASS file not found or empty: {ass_path}")
+
+        content = ass_path.read_text(encoding='utf-8', errors='strict')
+        if "[V4+ Styles]" not in content:
+            raise SubtitleError("Invalid ASS subtitle file (missing [V4+ Styles])")
+
+        lines = content.splitlines(True)  # keep line endings
+
+        in_styles = False
+        format_fields = None
+        format_index = {}
+
+        def normalize_field(name: str) -> str:
+            return name.strip().lower()
+
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+
+            # Enter/exit sections
+            if stripped.startswith('[') and stripped.endswith(']'):
+                in_styles = stripped.lower() == '[v4+ styles]'
+                continue
+
+            if not in_styles:
+                continue
+
+            # Parse format line
+            if stripped.lower().startswith('format:'):
+                format_fields = [f.strip() for f in stripped.split(':', 1)[1].split(',')]
+                format_index = {normalize_field(name): idx for idx, name in enumerate(format_fields)}
+                continue
+
+            # Update Default style line
+            if stripped.lower().startswith('style:') and format_fields and 'fontname' in format_index:
+                style_payload = stripped.split(':', 1)[1].strip()
+                parts = [p.strip() for p in style_payload.split(',')]
+
+                # Defensive: ensure parts align with format
+                if len(parts) < len(format_fields):
+                    parts += [''] * (len(format_fields) - len(parts))
+
+                name_idx = format_index.get('name', 0)
+                font_idx = format_index['fontname']
+
+                if parts[name_idx].strip().lower() == 'default':
+                    parts[font_idx] = font_name
+
+                    # Also apply basic style overrides when present
+                    if 'fontsize' in format_index:
+                        parts[format_index['fontsize']] = str(int(self.burn_style.get('font_size', 24)))
+                    if 'primarycolour' in format_index:
+                        parts[format_index['primarycolour']] = self.burn_style.get('primary_color', '&H00FFFFFF')
+                    if 'outlinecolour' in format_index:
+                        parts[format_index['outlinecolour']] = self.burn_style.get('outline_color', '&H00000000')
+                    if 'bold' in format_index:
+                        parts[format_index['bold']] = '1' if self.burn_style.get('bold', False) else '0'
+                    if 'italic' in format_index:
+                        parts[format_index['italic']] = '0'
+                    if 'alignment' in format_index:
+                        # Bottom-center is a sensible default (2)
+                        parts[format_index['alignment']] = '2'
+                    if 'marginl' in format_index:
+                        parts[format_index['marginl']] = '20'
+                    if 'marginr' in format_index:
+                        parts[format_index['marginr']] = '20'
+                    if 'marginv' in format_index:
+                        parts[format_index['marginv']] = '30'
+
+                    newline = '\n' if line.endswith('\n') else ''
+                    updated = 'Style: ' + ','.join(parts) + newline
+                    lines[i] = updated
+                    break
+
+        ass_path.write_text(''.join(lines), encoding='utf-8')
     
     def find_sinhala_font(self) -> str:
         """
@@ -359,30 +449,11 @@ class SubtitleProcessor:
             
             # Subtitle filter - libass will now find bindumathi from fonts.conf
             subtitle_file_escaped = self._escape_ffmpeg_filter_path(subtitle_path_for_burn)
-            fonts_dir_escaped = self._escape_ffmpeg_filter_path(project_fonts)
 
-            font_size = int(self.burn_style.get('font_size', 24))
-            bold = 1 if self.burn_style.get('bold', False) else 0
-            primary = self.burn_style.get('primary_color', '&H00FFFFFF')
-            outline_color = self.burn_style.get('outline_color', '&H00000000')
-
-            # Critical for Sinhala:
-            # - fontsdir ensures libass can locate project Fonts on any OS
-            # - charenc=UTF-8 forces correct decoding for SRT/VTT text
-            # - Do NOT force FontName; let libass/fontconfig choose from fontsdir
-            force_style = (
-                f"FontSize={font_size},"
-                f"PrimaryColour={primary},"
-                f"OutlineColour={outline_color},"
-                f"Outline=2,Shadow=1,Bold={bold},Italic=0"
-            )
-
-            subtitle_filter = (
-                f"subtitles=filename='{subtitle_file_escaped}':"
-                f"fontsdir='{fonts_dir_escaped}':"
-                f"charenc=UTF-8:"
-                f"force_style='{force_style}'"
-            )
+            # Per Sinhala hard-burn best practice:
+            # - Rely on ASS style (Fontname/size/colors) rather than FFmpeg force_style
+            # - Keep filter minimal to reduce parsing/fontconfig edge cases
+            subtitle_filter = f"subtitles=filename='{subtitle_file_escaped}':charenc=UTF-8"
             
             # Combine both filters: subtitles + watermark (watermark only shows for first 10 seconds)
             combined_filter = f"{subtitle_filter},{watermark_filter}"
