@@ -65,13 +65,13 @@ SUBTITLE_CONFIG = {
     'subtitle_codec': 'mov_text',  # For MP4 containers
     'burn_style': {
         'font_size': 24,
-        'font_name': 'DejaVu Sans',  # Unicode font supporting Sinhala/Asian languages
+        'font_name': 'bindumathi',  # Default Sinhala font (bindumathi.ttf in Fonts folder)
         'primary_color': '&HFFFFFF',  # White
         'outline_color': '&H000000',  # Black outline
         'bold': False
     },
     # Unicode fonts that support Sinhala (priority order)
-    'unicode_fonts': ['Noto Sans Sinhala', 'Iskoola Pota', 'DejaVu Sans', 'Liberation Sans', 'FreeSans']
+    'unicode_fonts': ['bindumathi', 'Noto Sans Sinhala', 'Iskoola Pota', 'DejaVu Sans', 'Liberation Sans', 'FreeSans']
 }
 
 # Download settings

@@ -102,22 +102,27 @@ class SubtitleProcessor:
 
         return ass_path
 
-    def inject_font_into_ass(self, ass_path: Path, font_name: str = 'Noto Sans Sinhala') -> None:
+    def inject_font_into_ass(self, ass_path: Path, font_name: str = 'bindumathi') -> None:
         """Inject/update the Default ASS style to use a Sinhala-capable font.
 
-        Note: ASS cannot truly embed a .ttf. This sets the style's Fontname field so libass
-        can pick the right font if available at runtime.
+        Creates a proper ASS file with complete style fields for Sinhala rendering.
+        Uses 'bindumathi' as default font name since bindumathi.ttf exists in Fonts folder.
         """
         if not ass_path.exists() or ass_path.stat().st_size == 0:
             raise SubtitleError(f"ASS file not found or empty: {ass_path}")
 
         content = ass_path.read_text(encoding='utf-8', errors='strict')
-        if "[V4+ Styles]" not in content:
-            raise SubtitleError("Invalid ASS subtitle file (missing [V4+ Styles])")
-
+        
+        # Check if we have V4+ Styles section
+        has_styles_section = "[V4+ Styles]" in content
+        
         lines = content.splitlines(True)  # keep line endings
-
+        output_lines = []
+        
         in_styles = False
+        in_events = False
+        format_found = False
+        style_updated = False
         format_fields = None
         format_index = {}
 
@@ -129,60 +134,219 @@ class SubtitleProcessor:
 
             # Enter/exit sections
             if stripped.startswith('[') and stripped.endswith(']'):
-                in_styles = stripped.lower() == '[v4+ styles]'
+                section_name = stripped.lower()
+                in_styles = section_name == '[v4+ styles]'
+                in_events = section_name == '[events]'
+                output_lines.append(line)
+                
+                # If entering styles section and no format yet, add proper format
+                if in_styles and not has_styles_section:
+                    # Add complete ASS style format
+                    output_lines.append('Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n')
+                    output_lines.append(f'Style: Default,{font_name},24,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,2,0,2,20,20,30,1\n')
+                    format_found = True
+                    style_updated = True
                 continue
 
-            if not in_styles:
-                continue
+            if in_styles:
+                # Parse format line
+                if stripped.lower().startswith('format:'):
+                    format_fields = [f.strip() for f in stripped.split(':', 1)[1].split(',')]
+                    format_index = {normalize_field(name): idx for idx, name in enumerate(format_fields)}
+                    format_found = True
+                    
+                    # Ensure format has all required fields
+                    required_fields = ['Name', 'Fontname', 'Fontsize', 'PrimaryColour', 'SecondaryColour', 'OutlineColour', 'BackColour', 'Bold', 'Italic', 'Underline', 'StrikeOut', 'ScaleX', 'ScaleY', 'Spacing', 'Angle', 'BorderStyle', 'Outline', 'Shadow', 'Alignment', 'MarginL', 'MarginR', 'MarginV', 'Encoding']
+                    if len(format_fields) < len(required_fields):
+                        # Replace with complete format
+                        output_lines.append('Format: ' + ', '.join(required_fields) + '\n')
+                        # Update index
+                        format_fields = required_fields
+                        format_index = {normalize_field(name): idx for idx, name in enumerate(format_fields)}
+                    else:
+                        output_lines.append(line)
+                    continue
 
-            # Parse format line
-            if stripped.lower().startswith('format:'):
-                format_fields = [f.strip() for f in stripped.split(':', 1)[1].split(',')]
-                format_index = {normalize_field(name): idx for idx, name in enumerate(format_fields)}
-                continue
+                # Update Default style line
+                if stripped.lower().startswith('style:') and format_found:
+                    style_payload = stripped.split(':', 1)[1].strip()
+                    parts = [p.strip() for p in style_payload.split(',')]
 
-            # Update Default style line
-            if stripped.lower().startswith('style:') and format_fields and 'fontname' in format_index:
-                style_payload = stripped.split(':', 1)[1].strip()
-                parts = [p.strip() for p in style_payload.split(',')]
+                    # If incomplete style, create complete one
+                    if len(parts) < 22:  # Standard ASS has 23 fields
+                        # Create complete style with all fields
+                        style_line = f'Style: Default,{font_name},24,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,2,0,2,20,20,30,1\n'
+                        output_lines.append(style_line)
+                        style_updated = True
+                        continue
 
-                # Defensive: ensure parts align with format
-                if len(parts) < len(format_fields):
-                    parts += [''] * (len(format_fields) - len(parts))
+                    name_idx = format_index.get('name', 0)
+                    if name_idx < len(parts) and parts[name_idx].strip().lower() == 'default':
+                        # Update font and style parameters
+                        if 'fontname' in format_index:
+                            parts[format_index['fontname']] = font_name
+                        if 'fontsize' in format_index:
+                            parts[format_index['fontsize']] = '24'
+                        if 'primarycolour' in format_index:
+                            parts[format_index['primarycolour']] = '&H00FFFFFF'
+                        if 'secondarycolour' in format_index:
+                            parts[format_index['secondarycolour']] = '&H000000FF'
+                        if 'outlinecolour' in format_index:
+                            parts[format_index['outlinecolour']] = '&H00000000'
+                        if 'backcolour' in format_index:
+                            parts[format_index['backcolour']] = '&H80000000'
+                        if 'bold' in format_index:
+                            parts[format_index['bold']] = '0'
+                        if 'italic' in format_index:
+                            parts[format_index['italic']] = '0'
+                        if 'underline' in format_index:
+                            parts[format_index['underline']] = '0'
+                        if 'strikeout' in format_index:
+                            parts[format_index['strikeout']] = '0'
+                        if 'scalex' in format_index:
+                            parts[format_index['scalex']] = '100'
+                        if 'scaley' in format_index:
+                            parts[format_index['scaley']] = '100'
+                        if 'spacing' in format_index:
+                            parts[format_index['spacing']] = '0'
+                        if 'angle' in format_index:
+                            parts[format_index['angle']] = '0'
+                        if 'borderstyle' in format_index:
+                            parts[format_index['borderstyle']] = '1'
+                        if 'outline' in format_index:
+                            parts[format_index['outline']] = '2'
+                        if 'shadow' in format_index:
+                            parts[format_index['shadow']] = '0'
+                        if 'alignment' in format_index:
+                            parts[format_index['alignment']] = '2'  # Bottom center
+                        if 'marginl' in format_index:
+                            parts[format_index['marginl']] = '20'
+                        if 'marginr' in format_index:
+                            parts[format_index['marginr']] = '20'
+                        if 'marginv' in format_index:
+                            parts[format_index['marginv']] = '30'
+                        if 'encoding' in format_index:
+                            parts[format_index['encoding']] = '1'
 
-                name_idx = format_index.get('name', 0)
-                font_idx = format_index['fontname']
+                        newline = '\n' if line.endswith('\n') else ''
+                        updated = 'Style: ' + ','.join(parts) + newline
+                        output_lines.append(updated)
+                        style_updated = True
+                        continue
 
-                if parts[name_idx].strip().lower() == 'default':
-                    parts[font_idx] = font_name
+            output_lines.append(line)
 
-                    # Also apply basic style overrides when present
-                    if 'fontsize' in format_index:
-                        parts[format_index['fontsize']] = str(int(self.burn_style.get('font_size', 24)))
-                    if 'primarycolour' in format_index:
-                        parts[format_index['primarycolour']] = self.burn_style.get('primary_color', '&H00FFFFFF')
-                    if 'outlinecolour' in format_index:
-                        parts[format_index['outlinecolour']] = self.burn_style.get('outline_color', '&H00000000')
-                    if 'bold' in format_index:
-                        parts[format_index['bold']] = '1' if self.burn_style.get('bold', False) else '0'
-                    if 'italic' in format_index:
-                        parts[format_index['italic']] = '0'
-                    if 'alignment' in format_index:
-                        # Bottom-center is a sensible default (2)
-                        parts[format_index['alignment']] = '2'
-                    if 'marginl' in format_index:
-                        parts[format_index['marginl']] = '20'
-                    if 'marginr' in format_index:
-                        parts[format_index['marginr']] = '20'
-                    if 'marginv' in format_index:
-                        parts[format_index['marginv']] = '30'
+        # If no style was found or updated, and we have events, insert style before events
+        if not style_updated and '[Events]' in content:
+            final_output = []
+            for line in output_lines:
+                if line.strip().lower() == '[events]':
+                    # Insert styles section before events
+                    final_output.append('[V4+ Styles]\n')
+                    final_output.append('Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n')
+                    final_output.append(f'Style: Default,{font_name},24,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,2,0,2,20,20,30,1\n')
+                    final_output.append('\n')
+                final_output.append(line)
+            output_lines = final_output
 
-                    newline = '\n' if line.endswith('\n') else ''
-                    updated = 'Style: ' + ','.join(parts) + newline
-                    lines[i] = updated
-                    break
-
-        ass_path.write_text(''.join(lines), encoding='utf-8')
+        ass_path.write_text(''.join(output_lines), encoding='utf-8')
+        logger.info(f"Injected font '{font_name}' into ASS subtitle: {ass_path.name}")
+    
+    def create_fontconfig_file(self) -> Path:
+        """
+        Create a fontconfig file (fonts.conf) that tells libass where to find Sinhala fonts.
+        This is critical for proper Sinhala rendering in hard-burned subtitles.
+        
+        Returns:
+            Path to created fonts.conf file
+        """
+        project_fonts = DIRS.get('fonts', Path('Fonts'))
+        if not isinstance(project_fonts, Path):
+            project_fonts = Path('Fonts')
+        
+        temp_dir = DIRS.get('temp', Path('temp'))
+        if not isinstance(temp_dir, Path):
+            temp_dir = Path('temp')
+        temp_dir.mkdir(exist_ok=True)
+        
+        fonts_conf_path = temp_dir / 'fonts.conf'
+        
+        # Absolute path to fonts directory (needed for fontconfig)
+        fonts_abs_path = str(project_fonts.absolute()).replace('\\', '/')
+        
+        # Create fontconfig XML that points to our Fonts directory
+        fontconfig_xml = f'''<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
+<fontconfig>
+  <!-- Directory containing Sinhala fonts -->
+  <dir>{fonts_abs_path}</dir>
+  
+  <!-- Font aliases for Sinhala fonts -->
+  <alias>
+    <family>bindumathi</family>
+    <prefer>
+      <family>bindumathi</family>
+    </prefer>
+  </alias>
+  
+  <alias>
+    <family>Noto Sans Sinhala</family>
+    <prefer>
+      <family>Noto Sans Sinhala</family>
+    </prefer>
+  </alias>
+  
+  <!-- Match bindumathi.ttf file -->
+  <match target="pattern">
+    <test qual="any" name="family">
+      <string>bindumathi</string>
+    </test>
+    <edit name="family" mode="assign" binding="same">
+      <string>bindumathi</string>
+    </edit>
+  </match>
+  
+  <!-- Match Noto Sans Sinhala -->
+  <match target="pattern">
+    <test qual="any" name="family">
+      <string>Noto Sans Sinhala</string>
+    </test>
+    <edit name="family" mode="assign" binding="same">
+      <string>Noto Sans Sinhala</string>
+    </edit>
+  </match>
+  
+  <!-- Enable Sinhala language support -->
+  <match target="font">
+    <test name="family" compare="eq">
+      <string>bindumathi</string>
+    </test>
+    <edit name="lang" mode="assign">
+      <string>si</string>
+    </edit>
+  </match>
+  
+  <match target="font">
+    <test name="family" compare="eq">
+      <string>Noto Sans Sinhala</string>
+    </test>
+    <edit name="lang" mode="assign">
+      <string>si</string>
+    </edit>
+  </match>
+  
+  <!-- Scan the directory recursively -->
+  <rescan>
+    <int>30</int>
+  </rescan>
+</fontconfig>
+'''
+        
+        fonts_conf_path.write_text(fontconfig_xml, encoding='utf-8')
+        logger.info(f"Created fontconfig file: {fonts_conf_path}")
+        logger.info(f"Fontconfig points to fonts directory: {fonts_abs_path}")
+        
+        return fonts_conf_path
     
     def find_sinhala_font(self) -> str:
         """
@@ -197,7 +361,9 @@ class SubtitleProcessor:
             project_fonts = Path('Fonts')
         
         # List of Sinhala fonts to try (in priority order)
+        # bindumathi.ttf is prioritized as it's specifically for Sinhala
         sinhala_fonts = [
+            'bindumathi.ttf',
             'NotoSansSinhala-Regular.ttf',
             'NotoSansSinhala.ttf',
             'NotoSansSinhala-Bold.ttf',
@@ -221,7 +387,7 @@ class SubtitleProcessor:
                     return str(font_path)
         
         # Last resort: use project font path even if not verified
-        fallback_path = project_fonts / 'NotoSansSinhala-Regular.ttf'
+        fallback_path = project_fonts / 'bindumathi.ttf'
         logger.warning(f"Font not verified, using fallback path: {fallback_path}")
         return str(fallback_path.absolute())
     
@@ -441,25 +607,39 @@ class SubtitleProcessor:
                 arial_font = 'C\\\\\\\\:/Windows/Fonts/arial.ttf'
             watermark_filter = f"drawtext=text='{watermark_text}':fontfile={arial_font}:fontsize=24:fontcolor=white:borderw=2:bordercolor=black:x=(w-text_w)/2:y=30:enable='lt(t,10)'"
             
-            # Get temp directory for fonts.conf
-            temp_dir = DIRS.get('temp', Path('temp'))
-            if not isinstance(temp_dir, Path):
-                temp_dir = Path('temp')
-            temp_dir.mkdir(exist_ok=True)
+            # Create fontconfig file so libass can find Sinhala fonts
+            fonts_conf_path = self.create_fontconfig_file()
             
-            # Subtitle filter - libass will now find bindumathi from fonts.conf
+            # Get the actual font file path for direct loading
+            font_file_path = self.find_sinhala_font()
+            font_file_escaped = self._escape_ffmpeg_filter_path(Path(font_file_path))
+            
+            # Subtitle filter with explicit font loading
             subtitle_file_escaped = self._escape_ffmpeg_filter_path(subtitle_path_for_burn)
 
-            # Per Sinhala hard-burn best practice:
-            # - Rely on ASS style (Fontname/size/colors) rather than FFmpeg force_style
-            # - Keep filter minimal to reduce parsing/fontconfig edge cases
-            subtitle_filter = f"subtitles=filename='{subtitle_file_escaped}':charenc=UTF-8"
+            # Critical for Sinhala: Use subtitles filter with explicit fontsdir parameter
+            # This ensures libass loads fonts from our Fonts folder
+            project_fonts = DIRS.get('fonts', Path('Fonts'))
+            if not isinstance(project_fonts, Path):
+                project_fonts = Path('Fonts')
+            fonts_dir_escaped = self._escape_ffmpeg_filter_path(project_fonts)
+            
+            # Build subtitle filter with font directory
+            subtitle_filter = f"subtitles=filename='{subtitle_file_escaped}':fontsdir='{fonts_dir_escaped}':charenc=UTF-8"
             
             # Combine both filters: subtitles + watermark (watermark only shows for first 10 seconds)
             combined_filter = f"{subtitle_filter},{watermark_filter}"
             
+            # Set FONTCONFIG environment variables for libass
+            env = os.environ.copy()
+            env['FONTCONFIG_FILE'] = str(fonts_conf_path.absolute())
+            env['FONTCONFIG_PATH'] = str(fonts_conf_path.parent.absolute())
+            
+            logger.info(f"Using fontconfig: {fonts_conf_path}")
+            logger.info(f"Font directory: {project_fonts.absolute()}")
+            logger.info(f"Font file: {font_file_path}")
+            
             # FFmpeg command for hard subtitle burning with Unicode support + watermark
-            # force_style sets font to support Sinhala/Unicode characters
             cmd = [
                 'ffmpeg',
                 '-i', str(video_path),
@@ -483,13 +663,14 @@ class SubtitleProcessor:
             video_info = self.get_video_info(video_path)
             total_duration = video_info.get('duration', 0)
             
-            # Run with progress output
+            # Run with progress output and fontconfig environment
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                universal_newlines=True
+                universal_newlines=True,
+                env=env  # Use environment with FONTCONFIG settings
             )
             
             # Monitor progress with FFmpeg output parsing and cancellation check
