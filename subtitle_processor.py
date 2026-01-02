@@ -43,9 +43,6 @@ class SubtitleProcessor:
         # Prefer fonts we ship with the repo for predictable rendering
         if (project_fonts / 'NotoSansSinhala-Regular.ttf').exists() or (project_fonts / 'NotoSansSinhala.ttf').exists():
             return 'Noto Sans Sinhala'
-        if (project_fonts / 'bindumathi.ttf').exists():
-            return 'Bindumathi'
-
         # Fall back to configured list
         for font_name in SUBTITLE_CONFIG.get('unicode_fonts', []):
             if font_name:
@@ -340,19 +337,10 @@ class SubtitleProcessor:
                 crf = FFMPEG_CONFIG['crf']
                 threads = 0  # Auto
             
-            # Get Sinhala font for proper Unicode rendering
-            sinhala_font = self.find_sinhala_font()
-            logger.info(f"Using font for subtitles: {sinhala_font}")
-            
-            # Convert Windows path to Unix-style for FFmpeg
-            # FFmpeg needs forward slashes and escaped colons
-            sinhala_font_ffmpeg = str(sinhala_font).replace('\\', '\\\\\\\\').replace(':', '\\\\:')
-            
             # Get project fonts directory
             project_fonts = DIRS.get('fonts', Path('Fonts'))
             if not isinstance(project_fonts, Path):
                 project_fonts = Path('Fonts')
-            fonts_dir_ffmpeg = str(project_fonts.absolute()).replace('\\', '\\\\\\\\').replace(':', '\\\\:')
             
             # Create complex filter with subtitles + watermark text for first 10 seconds
             watermark_text = "This is MovieDownloadSL..."
@@ -369,23 +357,7 @@ class SubtitleProcessor:
                 temp_dir = Path('temp')
             temp_dir.mkdir(exist_ok=True)
             
-            # Create a fonts.conf file to help libass find the bindumathi font
-            fonts_conf_content = f"""<?xml version="1.0"?>
-<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
-<fontconfig>
-  <dir>{project_fonts.absolute()}</dir>
-  <cachedir>{temp_dir.absolute()}/fontconfig-cache</cachedir>
-</fontconfig>
-"""
-            fonts_conf_path = temp_dir / 'fonts.conf'
-            fonts_conf_path.write_text(fonts_conf_content, encoding='utf-8')
-            
-            # Set FONTCONFIG_FILE environment variable
-            import os
-            os.environ['FONTCONFIG_FILE'] = str(fonts_conf_path.absolute())
-            
             # Subtitle filter - libass will now find bindumathi from fonts.conf
-            preferred_font_name = self._get_preferred_unicode_font_name()
             subtitle_file_escaped = self._escape_ffmpeg_filter_path(subtitle_path_for_burn)
             fonts_dir_escaped = self._escape_ffmpeg_filter_path(project_fonts)
 
@@ -397,9 +369,8 @@ class SubtitleProcessor:
             # Critical for Sinhala:
             # - fontsdir ensures libass can locate project Fonts on any OS
             # - charenc=UTF-8 forces correct decoding for SRT/VTT text
-            # - FontName selects a Unicode/Sinhala-capable font
+            # - Do NOT force FontName; let libass/fontconfig choose from fontsdir
             force_style = (
-                f"FontName={preferred_font_name},"
                 f"FontSize={font_size},"
                 f"PrimaryColour={primary},"
                 f"OutlineColour={outline_color},"
